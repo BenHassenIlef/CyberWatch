@@ -1,0 +1,523 @@
+================================================================================
+                        CYBERWATCH AI — DOCUMENTATION DU PROJET
+              Plateforme de veille sur les vulnérabilités (CVE)
+================================================================================
+Version du document : 1.0
+Public visé : développeurs, encadrants, jury de soutenance.
+Objectif : expliquer CHAQUE page nécessaire, son rôle, son contenu, et
+           l'architecture technique globale du projet.
+
+
+================================================================================
+0. VUE D'ENSEMBLE
+================================================================================
+
+CyberWatch AI est une plateforme web qui collecte AUTOMATIQUEMENT les
+vulnérabilités de cybersécurité (CVE = Common Vulnerabilities and Exposures)
+depuis des sources fiables (NVD, Microsoft MSRC, CISA...), les vérifie via un
+agent intelligent, puis les met à disposition d'un consultant pour consultation
+et analyse.
+
+Le système repose sur DEUX rôles distincts :
+
+  +-------------------+---------------------------------------------------------+
+  | RÔLE              | RESPONSABILITÉ                                          |
+  +-------------------+---------------------------------------------------------+
+  | ADMIN             | Gère les SOURCES : ajouter, vérifier (agent), valider,  |
+  |                   | activer/désactiver, supprimer, configurer les secrets.  |
+  +-------------------+---------------------------------------------------------+
+  | CONSULTANT        | CONSULTE les CVE collectées (recherche, filtres,        |
+  |                   | détail) et configure la PLANIFICATION de la collecte.   |
+  +-------------------+---------------------------------------------------------+
+
+Idée forte du projet : un « agent de vérification » et un « agent de collecte »
+INTELLIGENTS qui choisissent automatiquement la meilleure méthode de collecte
+(API / RSS / Scraping) en VALIDANT réellement la présence de données CVE.
+
+
+================================================================================
+1. ARCHITECTURE GLOBALE
+================================================================================
+
+  +---------------------------------------------------------------------------+
+  |                              NAVIGATEUR                                    |
+  |   Frontend React (Vite + TailwindCSS)  —  http://localhost:5173           |
+  |   Pages Admin / Consultant / Auth  +  Axios (JWT dans l'en-tête)          |
+  +----------------------------------+----------------------------------------+
+                                     |  HTTP / JSON (REST)
+                                     v
+  +---------------------------------------------------------------------------+
+  |                        Backend FastAPI (Python)                           |
+  |                        http://127.0.0.1:8000                              |
+  |                                                                           |
+  |   Routers :  /auth   /admin   /consultant                                 |
+  |                                                                           |
+  |   Services « agents » :                                                   |
+  |     - Agent de VÉRIFICATION  (services/verification/agent.py)             |
+  |     - Collection Method Analyzer (method_analyzer.py)                     |
+  |     - Agent de COLLECTE (routers/admin.py : _collect_with_fallback)       |
+  +----------------------------------+----------------------------------------+
+                                     |  Motor (driver async)
+                                     v
+  +---------------------------------------------------------------------------+
+  |                        Base de données MongoDB                            |
+  |   Collections : users, sources, source_credentials, cves,                 |
+  |                 source_history, collection_schedule, audit_log            |
+  +---------------------------------------------------------------------------+
+
+  Ressources externes appelées par les agents :
+    - APIs officielles : NVD, Microsoft MSRC, CISA KEV, CIRCL, Red Hat, GitHub
+    - Navigateur headless Chromium (Playwright) pour le rendu des pages
+      dynamiques (JavaScript)
+
+STACK TECHNIQUE
+  Frontend  : React 18, Vite, React Router, TailwindCSS, Axios, lucide-react
+  Backend   : Python (FastAPI), Motor (MongoDB async), httpx, Playwright
+  Auth      : JWT (JSON Web Token), mots de passe hachés (bcrypt/passlib)
+  Sécurité  : secrets d'API chiffrés au repos (Fernet), rôles protégés
+  Base      : MongoDB
+
+
+================================================================================
+2. PLAN DE NAVIGATION (ROUTES)
+================================================================================
+
+  ROUTES PUBLIQUES (authentification)
+    /admin/signin            Connexion Admin
+    /admin/signup            Inscription Admin
+    /consultant/signin       Connexion Consultant
+    /consultant/signup       Inscription Consultant
+
+  ROUTES ADMIN (protégées — rôle « admin »)
+    /admin/sources           Liste des sources (page d'accueil admin)
+    /admin/sources/new       Ajouter et vérifier une nouvelle source
+    /admin/sources/:id       Détail / vérification / configuration d'une source
+
+  ROUTES CONSULTANT (protégées — rôle « consultant »)
+    /consultant/cves         Liste des CVE (page d'accueil consultant)
+    /consultant/cves/:id     Détail d'une CVE
+    /consultant/schedule     Planification de la collecte
+
+  REDIRECTIONS
+    /                        -> redirige vers l'espace du rôle connecté
+    /admin, /admin/dashboard -> /admin/sources
+    /consultant              -> /consultant/cves
+    (route inconnue)         -> /
+
+
+================================================================================
+3. LES PAGES EN DÉTAIL
+================================================================================
+
+--------------------------------------------------------------------------------
+3.1  PAGE — CONNEXION (SignIn)
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/auth/SignIn.jsx
+Routes     : /admin/signin  et  /consultant/signin
+Rôle       : public
+But        : permettre à un utilisateur de se connecter selon son rôle.
+
+Contenu / champs :
+  - E-mail
+  - Mot de passe
+  - Bouton « Se connecter »
+  - Lien vers la page d'inscription du même rôle
+
+Fonctionnement :
+  - Envoie POST /auth/login { email, password, role }
+  - Le backend vérifie le mot de passe (haché) et renvoie un JWT + le profil
+  - Le token est stocké côté client et ajouté à chaque requête (Axios)
+  - Redirection automatique vers l'espace du rôle.
+
+--------------------------------------------------------------------------------
+3.2  PAGE — INSCRIPTION (SignUp)
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/auth/SignUp.jsx
+Routes     : /admin/signup  et  /consultant/signup
+Rôle       : public
+But        : créer un compte (Admin ou Consultant).
+
+Contenu / champs :
+  - Nom complet
+  - E-mail
+  - Mot de passe
+  - Bouton « Créer le compte »
+
+Fonctionnement :
+  - Envoie POST /auth/signup { full_name, email, password, role }
+  - Un compte est créé (rôle fixé par la page), un JWT est renvoyé.
+  - E-mail déjà utilisé -> message d'erreur.
+
+================================================================================
+        ESPACE ADMINISTRATEUR — GESTION DES SOURCES
+================================================================================
+
+--------------------------------------------------------------------------------
+3.3  PAGE — LISTE DES SOURCES (Sources)   [page d'accueil Admin]
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/admin/Sources.jsx
+Route      : /admin/sources
+Rôle       : admin
+But        : tableau de bord des sources CVE et point d'entrée de la gestion.
+
+Contenu :
+  - 4 cartes de statistiques : Sources totales / Validées / En attente / Rejetées
+  - Barre de recherche (par nom ou méthode)
+  - Bouton « Nouvelle source »
+  - Tableau des sources avec colonnes :
+        * Nom (lien vers le détail)
+        * Méthode de collecte (API / RSS / Web Scraping) + cadenas si auth requise
+        * Statut (En attente / Validée / Rejetée / Désactivée)
+        * Score de confiance (/100)
+        * Dernière collecte
+        * Actions : Relancer la collecte | Activer/Désactiver | Modifier | Supprimer
+
+Endpoints appelés :
+  - GET  /admin/sources                          (liste)
+  - GET  /admin/sources/stats                    (statistiques)
+  - POST /admin/sources/{id}/trigger-collection  (relancer la collecte)
+  - PUT  /admin/sources/{id}                      (changer le statut)
+  - DELETE /admin/sources/{id}                    (supprimer)
+
+--------------------------------------------------------------------------------
+3.4  PAGE — NOUVELLE SOURCE (SourceNew)
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/admin/SourceNew.jsx
+Route      : /admin/sources/new
+Rôle       : admin
+But        : ajouter une source PUIS lancer immédiatement l'agent de vérification.
+
+Contenu — étape 1 (formulaire) :
+  - Nom
+  - URL
+  - Description (optionnelle)
+  - Bouton « Créer et vérifier »
+  - Note : la MÉTHODE de collecte et l'AUTHENTIFICATION sont détectées
+    automatiquement (l'admin ne les choisit pas).
+
+Contenu — étape 2 (résultat de la vérification) :
+  Affiche le rapport simplifié (composant AdminVerification) :
+    - Date de vérification + Verdict (FIABLE / À SURVEILLER / NON FIABLE)
+    - Résumé (URL accessible, domaine officiel, liste blanche, HTTPS,
+      contient des CVE, publie aujourd'hui)
+    - Score global /100 + Conclusion
+    - Niveau 1 — Vérification technique
+    - Niveau 2 — Vérification de crédibilité
+  Boutons : Valider | Refuser | Décider plus tard
+
+Endpoints appelés :
+  - POST /admin/sources               (création)
+  - POST /admin/sources/{id}/verify   (agent de vérification)
+  - PUT  /admin/sources/{id}          (valider / refuser)
+
+--------------------------------------------------------------------------------
+3.5  PAGE — DÉTAIL D'UNE SOURCE (SourceDetail)
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/admin/SourceDetail.jsx
+Route      : /admin/sources/:id
+Rôle       : admin
+But        : consulter/modifier une source, relancer la vérification, gérer les
+             secrets et déclencher la collecte. C'EST LA PAGE LA PLUS RICHE.
+
+Contenu — carte « COLLECTE » (rapport de l'analyseur de méthode) :
+    - Méthode détectée (API / RSS / Web Scraping)
+    - Authentication (Aucune / requise / configurée)
+    - API Endpoint (l'URL réelle de collecte, ex. l'API NVD/MSRC)
+    - Data Format (JSON / XML / HTML)
+    - Méthode de repli (fallback : API -> RSS -> Scraping)
+    - Validation de la méthode : Réussie / Échec + nb de CVE + score /100
+    - Décision / Explication (pourquoi cette méthode a été retenue)
+    - Méthodes testées : liste de chaque candidat avec statut
+        validé (v) / rejeté (x) / indisponible (-), nb de CVE et score
+    - Bloc « Authentification » : saisie du secret (API Key / Bearer / Basic /
+      OAuth) — stocké CHIFFRÉ, jamais réaffiché.
+
+Contenu — carte « INFORMATIONS » :
+    - Nom, URL, Description (modifiables)
+    - Boutons : Tester la connexion | Activer/Désactiver la collecte |
+      Relancer la collecte | Enregistrer
+
+Contenu — carte « VÉRIFICATION » :
+    - Le rapport AdminVerification (verdict, résumé, score, niveaux 1 & 2),
+      idem à la page Nouvelle source.
+    - Bouton « Relancer » (relance l'agent de vérification).
+    - Bouton « Supprimer la source ».
+
+Endpoints appelés :
+  - GET    /admin/sources/{id}
+  - PUT    /admin/sources/{id}                     (modifier / statut)
+  - POST   /admin/sources/{id}/verify              (re-vérifier)
+  - POST   /admin/sources/{id}/test-connection     (test de connexion)
+  - POST   /admin/sources/{id}/trigger-collection  (collecter maintenant)
+  - PUT    /admin/sources/{id}/credentials         (enregistrer le secret)
+  - DELETE /admin/sources/{id}/credentials         (supprimer le secret)
+  - DELETE /admin/sources/{id}                      (supprimer la source)
+
+================================================================================
+        ESPACE CONSULTANT — CONSULTATION DES CVE
+================================================================================
+
+--------------------------------------------------------------------------------
+3.6  PAGE — LISTE DES CVE (Cves)   [page d'accueil Consultant]
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/consultant/Cves.jsx
+Route      : /consultant/cves
+Rôle       : consultant
+But        : rechercher et filtrer les CVE collectées par les agents.
+
+Contenu :
+  - Barre de recherche (CVE ID, titre, description)
+  - Filtres : Criticité | Produit | Catégorie | Date de début | Date de fin
+  - Bouton « Réinitialiser » les filtres
+  - Tableau paginé, colonnes :
+        CVE ID (lien) | Titre | Produit | CVSS | Criticité |
+        Date | Source | Exploit | (voir détail)
+  - Pagination (Précédent / Suivant) + total
+
+Endpoints appelés :
+  - GET /consultant/cves         (liste paginée + filtres)
+  - GET /consultant/cve-facets   (valeurs de filtres : produits, catégories)
+
+--------------------------------------------------------------------------------
+3.7  PAGE — DÉTAIL D'UNE CVE (CveDetail)
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/consultant/CveDetail.jsx
+Route      : /consultant/cves/:id
+Rôle       : consultant
+But        : afficher toutes les informations d'une vulnérabilité.
+
+Contenu :
+  - Identifiant CVE, titre, description
+  - Score CVSS et criticité (critical / high / medium / low)
+  - Catégorie (type de vulnérabilité), produits affectés
+  - Statut d'exploitation (aucun / PoC / exploité activement)
+  - Date de publication, source d'origine
+  - Résumé « IA » (synthèse générée à partir des champs)
+
+Endpoint appelé :
+  - GET /consultant/cves/{id}
+
+--------------------------------------------------------------------------------
+3.8  PAGE — PLANIFICATION DE LA COLLECTE (Schedule)
+--------------------------------------------------------------------------------
+Fichier    : app/frontend/src/pages/consultant/Schedule.jsx
+Route      : /consultant/schedule
+Rôle       : consultant
+But        : définir QUAND la collecte automatique des CVE doit s'exécuter
+             (configuration globale unique).
+
+Contenu / champs :
+  - Fréquence : Toutes les heures / Toutes les 6 heures / Tous les jours /
+    Toutes les semaines
+  - Heure d'exécution (0 à 23)
+  - Minute d'exécution (0 à 59)
+  - Bouton « Enregistrer la planification »
+
+Endpoints appelés :
+  - GET /consultant/collection-schedule
+  - PUT /consultant/collection-schedule
+
+
+================================================================================
+4. LES AGENTS (LE CŒUR DU BACKEND)
+================================================================================
+
+--------------------------------------------------------------------------------
+4.1  AGENT DE VÉRIFICATION      (services/verification/agent.py)
+--------------------------------------------------------------------------------
+Lancé lors de l'ajout / re-vérification d'une source. Produit un rapport avec un
+score global et une décision (FIABLE / À SURVEILLER / NON FIABLE).
+
+Il compose plusieurs briques :
+
+  (a) http_client.py       Requête HTTP réelle (statut, TLS, type de contenu,
+                           corps de la page).
+
+  (b) browser_client.py    Rendu de la page avec un navigateur Chromium
+                           (Playwright) quand la page est dynamique (JavaScript)
+                           ou bloquée par une protection anti-bot.
+
+  (c) Collection Method Analyzer  (method_analyzer.py) — voir 4.2
+
+  (d) technical.py         NIVEAU 1 — Vérification technique :
+                           URL renseignée, URL accessible (HTTP 200),
+                           HTTPS/TLS, contenu cohérent avec la méthode.
+
+  (e) credibility.py       NIVEAU 2 — Vérification de crédibilité :
+                           domaine d'organisation officielle, liste blanche,
+                           présence de CVE, existence du CVE dans la base NVD...
+
+  (f) cve.py               Extraction des identifiants CVE (regex CVE-AAAA-NNNN)
+                           et validation d'existence via l'API officielle NVD.
+
+  (g) cve_dates.py         « Publie aujourd'hui ? » — extrait la date de
+                           publication de CHAQUE CVE (API / RSS / HTML) et la
+                           compare à la date du jour (pas une simple présence de
+                           la date dans la page).
+
+  Score global = 40% technique + 60% crédibilité.
+  Seuils : >= 70 FIABLE, 40..69 À SURVEILLER, < 40 NON FIABLE.
+
+--------------------------------------------------------------------------------
+4.2  COLLECTION METHOD ANALYZER  (services/verification/method_analyzer.py)
+--------------------------------------------------------------------------------
+Choisit la MEILLEURE méthode de collecte en la VALIDANT réellement (une méthode
+n'est jamais retenue seulement parce que la technologie existe).
+
+Ordre de priorité (chaîne de repli / fallback) :
+    1. API officielle            (registre d'API connues + détection JSON/XML)
+    2. Flux RSS/Atom             (validé UNIQUEMENT s'il contient des CVE)
+    3. API interne JavaScript    (endpoints fetch/XHR repérés dans la page)
+    4. Scraping dynamique        (rendu navigateur Playwright)
+    5. Scraping HTML classique   (HTML brut)
+
+Score de pertinence (CVE Detection Score) attribué à chaque méthode testée :
+    + 50  au moins un identifiant CVE présent
+    + 20  date de publication trouvée
+    + 20  description de vulnérabilité trouvée
+    + 10  score CVSS trouvé
+  Seuil de validation : 50. En dessous, la méthode est jugée NON adaptée
+  et on passe à la suivante.
+
+Registre d'API officielles connues (exemples) :
+    NVD    -> https://services.nvd.nist.gov/rest/json/cves/2.0
+    MSRC   -> https://api.msrc.microsoft.com/sug/v2.0/en-US/vulnerability
+    CISA   -> .../feeds/known_exploited_vulnerabilities.json
+    + CIRCL, Red Hat, GitHub Advisories
+
+Exemple concret (Microsoft MSRC) :
+    - La page /update-guide/vulnerability est dynamique : HTML brut = 0 CVE.
+    - Un « RSS » éventuel ne contient pas de CVE  -> RSS rejeté.
+    - L'API officielle MSRC renvoie 126 CVE       -> Méthode = API, validée.
+    - Résultat : Contains CVE = True.
+
+--------------------------------------------------------------------------------
+4.3  AGENT DE COLLECTE          (routers/admin.py : _collect_with_fallback)
+--------------------------------------------------------------------------------
+Déclenché par « Relancer la collecte » (ou par la planification).
+Applique le repli en conditions réelles : essaie l'API, puis le RSS, puis le
+scraping, et enregistre la méthode réellement utilisée (method_used) dans
+l'historique de collecte. Une API protégée sans secret configuré est bloquée.
+
+
+================================================================================
+5. MODÈLE DE DONNÉES (COLLECTIONS MONGODB)
+================================================================================
+
+users
+    _id, full_name, email, hashed_password, role (admin|consultant), created_at
+
+sources
+    _id, name, url, description, status (pending|validated|rejected|disabled)
+    created_by, created_at, last_sync_at
+    -- méthode de collecte (détectée + validée) --
+    collection_method (api_public|api_protected|rss|scraping), method_family
+    api_endpoint / detected_api_endpoint, rss_url / detected_rss_url
+    data_format (json|xml|html), backup_method / fallback_method
+    -- validation de pertinence --
+    contains_cve, cve_count, validation_score, validation_reason
+    detection_candidates[], detection_reason, detection_alternatives[]
+    last_method_check
+    -- authentification --
+    authentication_required, authentication_type, authentication_status,
+    api_key_configured
+    -- rapport de vérification --
+    verification { overall_score, decision, technical{}, credibility{},
+                   admin_indicators{}, verified_at, ... }
+
+source_credentials
+    source_id, secret CHIFFRÉ (Fernet), auth_type, username (Basic)
+
+cves
+    _id, cve_id, title, description, category, published_at, cvss_score,
+    severity, affected_products[], exploit_status, ai_summary,
+    source_id, collected_at
+
+source_history
+    source_id, triggered_at, status (success|failed), items_collected,
+    duration_ms, method_used, message
+
+collection_schedule   (document unique « global »)
+    frequency, hour, minute
+
+audit_log
+    user_id, role, action, details, timestamp
+
+
+================================================================================
+6. FLUX PRINCIPAL DE BOUT EN BOUT
+================================================================================
+
+  1) ADMIN se connecte -> /admin/sources
+  2) ADMIN clique « Nouvelle source », saisit Nom + URL -> POST /admin/sources
+     -> détection rapide de la méthode.
+  3) L'agent de VÉRIFICATION se lance -> POST .../verify
+        - fetch de la page (+ rendu navigateur si dynamique)
+        - Collection Method Analyzer : teste API/RSS/JS/dynamique/HTML,
+          valide par présence de CVE (score), choisit la meilleure méthode
+        - Niveau 1 (technique) + Niveau 2 (crédibilité) -> score + verdict
+  4) ADMIN valide la source (statut = validated).
+  5) COLLECTE (bouton « Relancer » ou planification) -> agent de collecte
+     avec repli API -> RSS -> Scraping -> insertion des CVE dans « cves ».
+  6) CONSULTANT se connecte -> /consultant/cves : recherche, filtre, ouvre le
+     détail d'une CVE ; configure la planification dans /consultant/schedule.
+
+
+================================================================================
+7. LANCER LE PROJET (RAPPEL)
+================================================================================
+
+  Pré-requis : MongoDB démarré (port 27017), Python + venv, Node.js.
+
+  BACKEND (depuis la racine du projet) :
+     app/backend/.venv/Scripts/python.exe -m uvicorn app.backend.main:app \
+        --host 127.0.0.1 --port 8000
+     Documentation interactive de l'API : http://127.0.0.1:8000/docs
+
+  FRONTEND (depuis app/frontend) :
+     npm install      (première fois)
+     npm run dev      ->  http://localhost:5173
+
+  NAVIGATEUR headless (première fois, pour le scraping dynamique) :
+     app/backend/.venv/Scripts/python.exe -m playwright install chromium
+
+
+================================================================================
+8. ARBORESCENCE SIMPLIFIÉE
+================================================================================
+
+  app/
+    backend/
+      main.py                         Point d'entrée FastAPI
+      core/         config, sécurité (JWT), crypto (Fernet)
+      db/           connexion MongoDB
+      dependencies/ auth (rôles protégés)
+      schemas/      modèles Pydantic (auth, source, cve, schedule)
+      routers/      auth.py | admin.py | consultant.py
+      services/
+        audit.py, credentials.py
+        verification/
+          agent.py                Orchestrateur de la vérification
+          method_analyzer.py      Choix + validation de la méthode
+          detection.py            Registre d'API + découverte RSS/API
+          technical.py            Niveau 1 (technique)
+          credibility.py          Niveau 2 (crédibilité)
+          cve.py                  Extraction + validation NVD des CVE
+          cve_dates.py            « Publie aujourd'hui ? » (dates par CVE)
+          http_client.py          Requête HTTP réelle
+          browser_client.py       Rendu Playwright (pages dynamiques)
+          metadata_extraction.py  Dates / organisation / titre
+    frontend/
+      src/
+        App.jsx                   Déclaration des routes
+        context/AuthContext.jsx   Session + JWT
+        routes/ProtectedRoute.jsx Protection par rôle
+        components/               Layout + composants UI réutilisables
+        pages/
+          auth/       SignIn.jsx, SignUp.jsx
+          admin/      Sources.jsx, SourceNew.jsx, SourceDetail.jsx
+          consultant/ Cves.jsx, CveDetail.jsx, Schedule.jsx
+
+================================================================================
+                                 FIN DU DOCUMENT
+================================================================================

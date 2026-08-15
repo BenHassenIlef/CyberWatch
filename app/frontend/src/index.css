@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #fdf2f4;
+  --color-brand-100: #fce4e9;
+  --color-brand-200: #f9c9d3;
+  --color-brand-300: #f2a0b3;
+  --color-brand-400: #e5677f;
+  --color-brand-500: #d13a5a;
+  --color-brand-600: #c61b3d;
+  --color-brand-700: #a01530;
+  --color-brand-800: #7d1027;
+  --color-brand-900: #5c0c1e;
+
+  --shadow-glow: 0 8px 30px -8px rgb(198 27 61 / 0.35);
+  --shadow-glow-lg: 0 20px 45px -12px rgb(198 27 61 / 0.4);
+}
+
+body {
+  margin: 0;
+  background-color: #f7f5f6;
+  background-image:
+    radial-gradient(at 0% 0%, rgb(198 27 61 / 0.06) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgb(198 27 61 / 0.05) 0px, transparent 50%);
+  background-attachment: fixed;
+  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+  color-scheme: light;
+}
+
+#root {
+  min-height: 100svh;
+}

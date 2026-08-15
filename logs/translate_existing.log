@@ -1,0 +1,31 @@
+2026-08-14 11:16:04,884 [INFO] Base : 10168 CVE | déjà traduites : 0 | déjà en français : 0 | à traiter : 10168
+2026-08-14 11:16:04,885 [INFO] --dry-run : aucun appel au modèle, aucune écriture.
+2026-08-14 11:16:06,107 [INFO] Base : 10168 CVE | déjà traduites : 0 | déjà en français : 0 | à traiter : 10168
+2026-08-14 11:16:07,758 [INFO] Lot de 3 traité — cumul 3 (traduites 3, déjà FR 0, échecs 0) | reste 10165 | 109 CVE/min
+2026-08-14 11:16:08,442 [WARNING] Appel LLM (groq) échoué : Client error '429 Too Many Requests' for url 'https://api.groq.com/openai/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-08-14 11:16:08,442 [WARNING] Traduction CVE-1999-1506 : réponse non exploitable (tentative 1/2).
+2026-08-14 11:16:08,826 [WARNING] Appel LLM (groq) échoué : Client error '429 Too Many Requests' for url 'https://api.groq.com/openai/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-08-14 11:16:08,826 [WARNING] Traduction CVE-1999-1122 : réponse non exploitable (tentative 1/2).
+2026-08-14 11:16:09,146 [WARNING] Appel LLM (groq) échoué : Client error '429 Too Many Requests' for url 'https://api.groq.com/openai/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-08-14 11:16:09,147 [WARNING] Traduction CVE-1999-1467 : réponse non exploitable (tentative 1/2).
+2026-08-14 11:16:09,468 [WARNING] Appel LLM (groq) échoué : Client error '429 Too Many Requests' for url 'https://api.groq.com/openai/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-08-14 11:16:09,468 [WARNING] Traduction CVE-1999-1506 : réponse non exploitable (tentative 2/2).
+2026-08-14 11:16:09,573 [WARNING] Appel LLM (groq) échoué : Client error '429 Too Many Requests' for url 'https://api.groq.com/openai/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-08-14 11:16:09,573 [WARNING] Traduction CVE-1999-1467 : réponse non exploitable (tentative 2/2).
+2026-08-14 11:16:09,841 [WARNING] Appel LLM (groq) échoué : Client error '429 Too Many Requests' for url 'https://api.groq.com/openai/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-08-14 11:16:09,841 [WARNING] Traduction CVE-1999-1122 : réponse non exploitable (tentative 2/2).
+2026-08-14 11:16:09,855 [INFO] Lot de 3 traité — cumul 6 (traduites 3, déjà FR 0, échecs 3) | reste 10162 | 96 CVE/min
+2026-08-14 11:16:09,855 [INFO] Limite de 6 CVE atteinte — arrêt volontaire.
+2026-08-14 11:16:09,855 [INFO] TERMINÉ en 4 s — 6 CVE traitées : 3 traduites, 0 déjà en français, 3 échecs.
+2026-08-14 11:16:09,856 [INFO] Les échecs sont rejouables : relancez avec --retry-failed.
+2026-08-14 11:17:30,169 [INFO] Base : 10168 CVE | déjà traduites : 3 | déjà en français : 0 | à traiter : 10165
+2026-08-14 11:17:32,662 [INFO] Lot de 3 traité — cumul 3 (traduites 3, déjà FR 0, échecs 0) | reste 10162 | 72 CVE/min
+2026-08-14 11:17:36,774 [INFO] Lot de 3 traité — cumul 6 (traduites 6, déjà FR 0, échecs 0) | reste 10159 | 55 CVE/min
+2026-08-14 11:17:38,789 [INFO] Limite de 6 CVE atteinte — arrêt volontaire.
+2026-08-14 11:17:38,790 [INFO] TERMINÉ en 9 s — 6 CVE traitées : 6 traduites, 0 déjà en français, 0 échecs.
