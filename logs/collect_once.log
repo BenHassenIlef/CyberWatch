@@ -9525,3 +9525,194 @@ For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/St
 2026-08-15 23:43:50,378 [INFO] cyberwatch.collect_once: collect_once : TERMINÉ — statut=partial | {'detected': 0, 'new': 0, 'updated': 0, 'source_count': 3, 'successful_sources': [], 'failed_sources': ['ancs'], 'timeout_sources': ['programm', 'fr']}
 2026-08-15 23:43:50,383 [ERROR] cyberwatch.collect_once: collect_once : ÉCHEC — statut=partial, code de sortie=1. L'échéance N'EST PAS honorée ; elle sera retentée.
 2026-08-15 23:43:50,385 [WARNING] cyberwatch.collect_once: Résultat non enregistré en base : Event loop is closed
+2026-08-16 00:18:49,405 [INFO] cyberwatch.collect_once: ================ COLLECT_ONCE 2026-08-16T00:18:49 ================
+2026-08-16 00:18:50,348 [INFO] cyberwatch.collect_once: collect_once : démarrage (trigger=windows_task, force=False).
+2026-08-16 00:18:50,365 [INFO] cyberwatch.scheduler: [windows_task] Échéance 2026-08-16 10:00 : 14 source(s) à collecter (0 déjà à jour).
+2026-08-16 00:18:50,367 [INFO] cyberwatch.collection: [-] COLLECTE DÉMARRÉE [run 6a80f3da76a02796c81ffc83] (scope=windows_task, partiel).
+2026-08-16 00:18:50,370 [INFO] cyberwatch.collection: [-] 14 source(s) à collecter (recouvrement partiel).
+2026-08-16 00:18:50,399 [INFO] cyberwatch.collection: [programm] Source « programm » : démarrage (méthode=html, url=https://www.cve.org/).
+2026-08-16 00:18:51,246 [INFO] cyberwatch.collection: [nsit] Source « nsit » : démarrage (méthode=json, url=https://nvd.nist.gov/vuln).
+2026-08-16 00:18:51,734 [INFO] cyberwatch.collection: [cisa] Source « cisa » : démarrage (méthode=json, url=https://www.cisa.gov/known-exploited-vulnerabilities-catalog).
+2026-08-16 00:18:52,273 [INFO] cyberwatch.collection: [microsoft] Source « microsoft » : démarrage (méthode=json, url=https://msrc.microsoft.com/update-guide/vulnerability).
+2026-08-16 00:18:53,119 [INFO] cyberwatch.collection: [secalert] Source « secalert » : démarrage (méthode=sitemap, url=https://secalerts.co/sitemap.xml).
+2026-08-16 00:18:54,056 [INFO] cyberwatch.collection: [cvemon] Source « cvemon » : démarrage (méthode=html, url=https://cvemon.intruder.io/trending).
+2026-08-16 00:18:54,900 [INFO] cyberwatch.collection: [tenable] Source « tenable » : démarrage (méthode=html, url=https://www.tenable.com/cve).
+2026-08-16 00:18:55,724 [INFO] cyberwatch.collection: [fr] Source « fr » : démarrage (méthode=html, url=https://www.cert.ssi.gouv.fr/avis/).
+2026-08-16 00:18:56,609 [INFO] cyberwatch.collection: [cvefind] Source « cvefind » : démarrage (méthode=html, url=https://www.cvefind.com/en/cve.html).
+2026-08-16 00:18:57,484 [INFO] cyberwatch.collection: [opencve] Source « opencve » : démarrage (méthode=html, url=https://app.opencve.io/cve/).
+2026-08-16 00:18:58,314 [INFO] cyberwatch.collection: [csa3] Source « csa3 » : démarrage (méthode=html, url=https://www.csa.gov.sg/alerts-and-advisories).
+2026-08-16 00:18:59,074 [INFO] cyberwatch.collection: [dgssi] Source « dgssi » : démarrage (méthode=html, url=https://dgssi.gov.ma/fr/bulletins/).
+2026-08-16 00:18:59,075 [INFO] cyberwatch.collection.html: [html] dgssi.gov.ma : portail d'avis connu (raccourci) → crawl deux niveaux.
+2026-08-16 00:18:59,077 [INFO] cyberwatch.collection: [ancs] Source « ancs » : démarrage (méthode=html, url=https://www.ancs.tn/fr/vulnerabilites?page=0).
+2026-08-16 00:18:59,078 [INFO] cyberwatch.collection.html: [html] www.ancs.tn : portail d'avis connu (raccourci) → crawl deux niveaux.
+2026-08-16 00:18:59,084 [INFO] cyberwatch.collection: [therackerwire] Source « therackerwire » : démarrage (méthode=rss, url=https://www.thehackerwire.com/).
+2026-08-16 00:19:03,388 [INFO] httpx: HTTP Request: GET https://www.thehackerwire.com/feed/ "HTTP/1.1 200 OK"
+2026-08-16 00:19:03,398 [INFO] httpx: HTTP Request: GET https://www.cve.org/ "HTTP/1.1 200 OK"
+2026-08-16 00:19:03,401 [INFO] httpx: HTTP Request: GET https://app.opencve.io/cve/ "HTTP/1.1 200 OK"
+2026-08-16 00:19:03,407 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/ "HTTP/1.1 200 OK"
+2026-08-16 00:19:03,418 [INFO] httpx: HTTP Request: GET https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json "HTTP/1.1 200 OK"
+2026-08-16 00:19:03,421 [INFO] httpx: HTTP Request: GET https://www.tenable.com/cve "HTTP/1.1 200 OK"
+2026-08-16 00:19:03,459 [INFO] cyberwatch.collection.structure: [structure] app.opencve.io : Liste PLATE : 22 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:03,461 [INFO] cyberwatch.collection.html: [html] app.opencve.io : détection structure → deux_niveaux=False (none) — Liste PLATE : 22 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:03,462 [INFO] cyberwatch.collection.html: [html] https://app.opencve.io/cve/ : 22 CVE directement sur la liste (agrégateur) → pas de suivi de détail.
+2026-08-16 00:19:03,463 [INFO] cyberwatch.collection: [opencve] Source « opencve » : 22 CVE (success) via html.
+2026-08-16 00:19:03,471 [INFO] cyberwatch.collection: [therackerwire] Source « therackerwire » : 10 CVE (success) via rss.
+2026-08-16 00:19:04,277 [INFO] cyberwatch.collection.structure: [structure] www.tenable.com : Liste PLATE : 99 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:04,279 [INFO] cyberwatch.collection.html: [html] www.tenable.com : détection structure → deux_niveaux=False (none) — Liste PLATE : 99 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:04,288 [INFO] cyberwatch.collection.html: [html] https://www.tenable.com/cve : 99 CVE directement sur la liste (agrégateur) → pas de suivi de détail.
+2026-08-16 00:19:04,289 [INFO] cyberwatch.collection: [tenable] Source « tenable » : 60 CVE (success) via html.
+2026-08-16 00:19:04,534 [INFO] cyberwatch.collection: [cisa] Source « cisa » : 1665 CVE (success) via json.
+2026-08-16 00:19:04,831 [INFO] httpx: HTTP Request: GET https://api.msrc.microsoft.com/sug/v2.0/en-US/vulnerability "HTTP/1.1 200 OK"
+2026-08-16 00:19:05,171 [INFO] httpx: HTTP Request: GET https://secalerts.co/sitemap.xml "HTTP/1.1 200 OK"
+2026-08-16 00:19:07,525 [INFO] httpx: HTTP Request: GET https://cvemon.intruder.io/trending "HTTP/1.1 200 OK"
+2026-08-16 00:19:07,619 [INFO] cyberwatch.collection.structure: [structure] cvemon.intruder.io : Liste PLATE : 11 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:07,621 [INFO] cyberwatch.collection.html: [html] cvemon.intruder.io : détection structure → deux_niveaux=False (none) — Liste PLATE : 11 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:07,626 [INFO] cyberwatch.collection.html: [html] https://cvemon.intruder.io/trending : 11 CVE directement sur la liste (agrégateur) → pas de suivi de détail.
+2026-08-16 00:19:07,628 [INFO] cyberwatch.collection: [cvemon] Source « cvemon » : 11 CVE (success) via html.
+2026-08-16 00:19:07,644 [INFO] httpx: HTTP Request: GET https://services.nvd.nist.gov/rest/json/cves/2.0?pubStartDate=2026-08-12T09:58:35.000&pubEndDate=2026-08-15T23:18:51.000 "HTTP/1.1 200 OK"
+2026-08-16 00:19:09,214 [INFO] cyberwatch.collection: [secalert] Source « secalert » : 500 CVE (success) via sitemap.
+2026-08-16 00:19:09,392 [INFO] httpx: HTTP Request: GET https://www.csa.gov.sg/alerts-and-advisories "HTTP/1.1 301 Moved Permanently"
+2026-08-16 00:19:09,556 [INFO] httpx: HTTP Request: GET https://www.cvefind.com/en/cve.html "HTTP/1.1 200 OK"
+2026-08-16 00:19:09,576 [INFO] httpx: HTTP Request: GET https://dgssi.gov.ma/fr/bulletins/?page=0 "HTTP/1.1 200 OK"
+2026-08-16 00:19:10,734 [INFO] httpx: HTTP Request: GET https://www.csa.gov.sg/alerts-and-advisories/ "HTTP/1.1 200 OK"
+2026-08-16 00:19:12,817 [INFO] cyberwatch.collection: [nsit] Source « nsit » : 2000 CVE (success) via json.
+2026-08-16 00:19:13,156 [INFO] cyberwatch.collection: [microsoft] Source « microsoft » : 500 CVE (success) via json.
+2026-08-16 00:19:13,320 [INFO] cyberwatch.collection.structure: [structure] www.csa.gov.sg : Liste PLATE : 71 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:13,323 [INFO] cyberwatch.collection.html: [html] www.csa.gov.sg : détection structure → deux_niveaux=False (none) — Liste PLATE : 71 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:13,353 [INFO] cyberwatch.collection.html: [html] https://www.csa.gov.sg/alerts-and-advisories : 71 CVE directement sur la liste (agrégateur) → pas de suivi de détail.
+2026-08-16 00:19:13,355 [INFO] cyberwatch.collection: [csa3] Source « csa3 » : 60 CVE (success) via html.
+2026-08-16 00:19:18,089 [INFO] cyberwatch.collection.advisory: [advisory] dgssi.gov.ma : page liste 0 → 2809 lien(s) (2755 inconnu(s) de la base, total 2809).
+2026-08-16 00:19:20,951 [INFO] httpx: HTTP Request: GET https://dgssi.gov.ma/fr/bulletins/vulnerabilites-affectant-mongodb-2 "HTTP/1.1 301 Moved Permanently"
+2026-08-16 00:19:26,204 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : page liste 0 → 20 lien(s) (0 inconnu(s) de la base, total 20).
+2026-08-16 00:19:26,207 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : page 0 entièrement connue → bord atteint, arrêt pagination.
+2026-08-16 00:19:27,097 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/json/ "HTTP/1.1 200 OK"
+2026-08-16 00:19:27,247 [INFO] cyberwatch.collection.structure: [structure] www.cve.org : Seulement 2 lien(s) de détail candidat(s) (< 3) → pas un portail « liste → détail ».
+2026-08-16 00:19:27,247 [INFO] cyberwatch.collection.html: [html] www.cve.org : détection structure → deux_niveaux=False (none) — Seulement 2 lien(s) de détail candidat(s) (< 3) → pas un portail « liste → détail ».
+2026-08-16 00:19:35,549 [INFO] httpx: HTTP Request: GET https://www.cve.org/cvePurpleVFavicon.svg "HTTP/1.1 200 OK"
+2026-08-16 00:19:35,840 [INFO] cyberwatch.collection.structure: [structure] www.cvefind.com : Liste PLATE : 10 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:35,840 [INFO] cyberwatch.collection.html: [html] www.cvefind.com : détection structure → deux_niveaux=False (none) — Liste PLATE : 10 CVE directement sur la page → collecte simple (harvest des CVE visibles, dont les plus récents).
+2026-08-16 00:19:35,844 [INFO] cyberwatch.collection.html: [html] https://www.cvefind.com/en/cve.html : 10 CVE directement sur la liste (agrégateur) → pas de suivi de détail.
+2026-08-16 00:19:35,845 [INFO] cyberwatch.collection: [cvefind] Source « cvefind » : 10 CVE (success) via html.
+2026-08-16 00:19:47,250 [INFO] httpx: HTTP Request: GET https://www.cve.org/assets/index-6lI331-s.css "HTTP/1.1 200 OK"
+2026-08-16 00:19:49,536 [INFO] httpx: HTTP Request: GET https://dgssi.gov.ma/fr/bulletins/vulnerabilites-affectant-des-produits-de-fortinet-7 "HTTP/1.1 301 Moved Permanently"
+2026-08-16 00:20:00,546 [INFO] httpx: HTTP Request: GET https://www.cve.org/Legal/PrivacyPolicy "HTTP/1.1 200 OK"
+2026-08-16 00:20:08,250 [INFO] cyberwatch.collection.structure: [structure] www.cert.ssi.gouv.fr : échantillon https://www.cert.ssi.gouv.fr/avis/json/ → 0 CVE.
+2026-08-16 00:20:12,213 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1032/ "HTTP/1.1 200 OK"
+2026-08-16 00:20:16,683 [INFO] httpx: HTTP Request: GET https://dgssi.gov.ma/fr/bulletins/vulnerabilites-critiques-affectant-des-produits-sonicwall "HTTP/1.1 301 Moved Permanently"
+2026-08-16 00:20:20,122 [INFO] cyberwatch.collection.structure: [structure] www.cert.ssi.gouv.fr : échantillon https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1032/ → 99 CVE.
+2026-08-16 00:20:20,123 [INFO] cyberwatch.collection.structure: [structure] www.cert.ssi.gouv.fr : décision=True (high) — Page liste sans CVE mais 18 lien(s) de détail ; un échantillon enfant contient 99 CVE → portail d'avis DEUX NIVEAUX confirmé.
+2026-08-16 00:20:20,124 [INFO] cyberwatch.collection.html: [html] www.cert.ssi.gouv.fr : détection structure → deux_niveaux=True (high) — Page liste sans CVE mais 18 lien(s) de détail ; un échantillon enfant contient 99 CVE → portail d'avis DEUX NIVEAUX confirmé.
+2026-08-16 00:20:23,322 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/?page=0 "HTTP/1.1 200 OK"
+2026-08-16 00:20:23,341 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : page liste 0 → 8 lien(s) (2 inconnu(s) de la base, total 8).
+2026-08-16 00:20:25,429 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/?page=1 "HTTP/1.1 200 OK"
+2026-08-16 00:20:25,457 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : page liste 1 → 0 lien(s) (2 inconnu(s) de la base, total 8).
+2026-08-16 00:20:29,483 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/json/ "HTTP/1.1 200 OK"
+2026-08-16 00:20:30,590 [INFO] httpx: HTTP Request: GET https://www.cve.org/#cve-main-page-content "HTTP/1.1 200 OK"
+2026-08-16 00:20:55,872 [INFO] cyberwatch.collection.advisory: [advisory] dgssi.gov.ma : budget temps atteint après 4/2809 bulletin(s) (partiel).
+2026-08-16 00:20:55,895 [INFO] cyberwatch.collection.advisory: [advisory] dgssi.gov.ma : 1 liste, 2809 bulletin(s) (0 nouveau(x), 0 modifié(s), 4 inchangé(s)), 4 détail(s), 0 CVE, 1 erreur(s).
+2026-08-16 00:20:55,896 [INFO] cyberwatch.collection.html: [html] dgssi.gov.ma : crawl deux niveaux sans résultat → repli collecte simple niveau 1.
+2026-08-16 00:20:57,763 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : budget temps atteint après 8/20 bulletin(s) (partiel).
+2026-08-16 00:20:57,821 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : 1 liste, 20 bulletin(s) (0 nouveau(x), 0 modifié(s), 8 inchangé(s)), 8 détail(s), 0 CVE, 1 erreur(s).
+2026-08-16 00:20:57,821 [INFO] cyberwatch.collection.html: [html] www.ancs.tn : crawl deux niveaux sans résultat → repli collecte simple niveau 1.
+2026-08-16 00:20:58,713 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/Overview "HTTP/1.1 200 OK"
+2026-08-16 00:20:58,932 [INFO] httpx: HTTP Request: GET https://dgssi.gov.ma/fr/bulletins/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:01,221 [INFO] cyberwatch.collection.html: [html] https://dgssi.gov.ma/fr/bulletins/ : 9 CVE directement sur la liste (agrégateur) → pas de suivi de détail.
+2026-08-16 00:21:01,222 [INFO] cyberwatch.collection: [dgssi] Source « dgssi » : 9 CVE (success) via html.
+2026-08-16 00:21:10,011 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1032/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:13,101 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/2/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:13,166 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : bulletin MODIFIÉ https://www.cert.ssi.gouv.fr/avis/page/2/ (1→0 CVE) → retraité.
+2026-08-16 00:21:16,665 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/3/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:16,733 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : bulletin MODIFIÉ https://www.cert.ssi.gouv.fr/avis/page/3/ (0→1 CVE) → retraité.
+2026-08-16 00:21:19,437 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/History "HTTP/1.1 200 OK"
+2026-08-16 00:21:20,780 [ERROR] cyberwatch.collection: [programm] Source « programm » : délai dépassé (html).
+2026-08-16 00:21:20,786 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/4/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:20,840 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : bulletin MODIFIÉ https://www.cert.ssi.gouv.fr/avis/page/4/ (0→1 CVE) → retraité.
+2026-08-16 00:21:24,912 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/5/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:25,753 [ERROR] cyberwatch.collection: [fr] Source « fr » : délai dépassé (html).
+2026-08-16 00:21:29,153 [ERROR] cyberwatch.collection: [ancs] Source « ancs » : délai dépassé (html).
+2026-08-16 00:21:29,154 [INFO] cyberwatch.collection: [-] Nouvelle tentative immédiate pour 3 source(s) en échec.
+2026-08-16 00:21:29,155 [INFO] cyberwatch.collection: [programm] Source « programm » : démarrage (méthode=html, url=https://www.cve.org/).
+2026-08-16 00:21:29,955 [INFO] cyberwatch.collection: [fr] Source « fr » : démarrage (méthode=html, url=https://www.cert.ssi.gouv.fr/avis/).
+2026-08-16 00:21:30,720 [INFO] cyberwatch.collection: [ancs] Source « ancs » : démarrage (méthode=html, url=https://www.ancs.tn/fr/vulnerabilites?page=0).
+2026-08-16 00:21:30,721 [INFO] cyberwatch.collection.html: [html] www.ancs.tn : portail d'avis connu (raccourci) → crawl deux niveaux.
+2026-08-16 00:21:33,841 [INFO] httpx: HTTP Request: GET https://www.cve.org/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:33,869 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:49,950 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : page liste 0 → 20 lien(s) (0 inconnu(s) de la base, total 20).
+2026-08-16 00:21:49,951 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : page 0 entièrement connue → bord atteint, arrêt pagination.
+2026-08-16 00:21:54,772 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/json/ "HTTP/1.1 200 OK"
+2026-08-16 00:21:58,906 [INFO] cyberwatch.collection.structure: [structure] www.cve.org : Seulement 2 lien(s) de détail candidat(s) (< 3) → pas un portail « liste → détail ».
+2026-08-16 00:21:58,907 [INFO] cyberwatch.collection.html: [html] www.cve.org : détection structure → deux_niveaux=False (none) — Seulement 2 lien(s) de détail candidat(s) (< 3) → pas un portail « liste → détail ».
+2026-08-16 00:22:03,859 [INFO] httpx: HTTP Request: GET https://www.cve.org/cvePurpleVFavicon.svg "HTTP/1.1 200 OK"
+2026-08-16 00:22:14,604 [INFO] httpx: HTTP Request: GET https://www.cve.org/assets/index-6lI331-s.css "HTTP/1.1 200 OK"
+2026-08-16 00:22:28,183 [INFO] cyberwatch.collection.structure: [structure] www.cert.ssi.gouv.fr : échantillon https://www.cert.ssi.gouv.fr/avis/json/ → 0 CVE.
+2026-08-16 00:22:30,845 [INFO] httpx: HTTP Request: GET https://www.cve.org/Legal/PrivacyPolicy "HTTP/1.1 200 OK"
+2026-08-16 00:22:31,259 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1032/ "HTTP/1.1 200 OK"
+2026-08-16 00:22:31,304 [INFO] cyberwatch.collection.structure: [structure] www.cert.ssi.gouv.fr : échantillon https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1032/ → 99 CVE.
+2026-08-16 00:22:31,307 [INFO] cyberwatch.collection.structure: [structure] www.cert.ssi.gouv.fr : décision=True (high) — Page liste sans CVE mais 18 lien(s) de détail ; un échantillon enfant contient 99 CVE → portail d'avis DEUX NIVEAUX confirmé.
+2026-08-16 00:22:31,308 [INFO] cyberwatch.collection.html: [html] www.cert.ssi.gouv.fr : détection structure → deux_niveaux=True (high) — Page liste sans CVE mais 18 lien(s) de détail ; un échantillon enfant contient 99 CVE → portail d'avis DEUX NIVEAUX confirmé.
+2026-08-16 00:22:34,628 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/?page=0 "HTTP/1.1 200 OK"
+2026-08-16 00:22:34,712 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : page liste 0 → 8 lien(s) (2 inconnu(s) de la base, total 8).
+2026-08-16 00:22:36,559 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/?page=1 "HTTP/1.1 200 OK"
+2026-08-16 00:22:36,595 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : page liste 1 → 0 lien(s) (2 inconnu(s) de la base, total 8).
+2026-08-16 00:22:38,891 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/json/ "HTTP/1.1 200 OK"
+2026-08-16 00:22:49,473 [INFO] httpx: HTTP Request: GET https://www.cve.org/#cve-main-page-content "HTTP/1.1 200 OK"
+2026-08-16 00:22:49,505 [INFO] cyberwatch.collection.advisory: [advisory] www.ancs.tn : 1 liste, 20 bulletin(s) (0 nouveau(x), 0 modifié(s), 7 inchangé(s)), 7 détail(s), 0 CVE, 0 erreur(s).
+2026-08-16 00:22:49,506 [INFO] cyberwatch.collection.html: [html] www.ancs.tn : crawl deux niveaux sans résultat → repli collecte simple niveau 1.
+2026-08-16 00:23:09,150 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/CERTFR-2026-AVI-1032/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:10,589 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/Overview "HTTP/1.1 200 OK"
+2026-08-16 00:23:11,745 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/2/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:11,831 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : bulletin MODIFIÉ https://www.cert.ssi.gouv.fr/avis/page/2/ (1→0 CVE) → retraité.
+2026-08-16 00:23:15,618 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/3/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:15,677 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : bulletin MODIFIÉ https://www.cert.ssi.gouv.fr/avis/page/3/ (0→1 CVE) → retraité.
+2026-08-16 00:23:18,855 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/4/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:18,942 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : bulletin MODIFIÉ https://www.cert.ssi.gouv.fr/avis/page/4/ (0→1 CVE) → retraité.
+2026-08-16 00:23:23,293 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/5/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:27,102 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/6/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:28,561 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/History "HTTP/1.1 200 OK"
+2026-08-16 00:23:29,911 [INFO] httpx: HTTP Request: GET https://www.cert.ssi.gouv.fr/avis/page/1741/ "HTTP/1.1 200 OK"
+2026-08-16 00:23:30,062 [INFO] cyberwatch.collection.advisory: [advisory] www.cert.ssi.gouv.fr : 2 liste, 8 bulletin(s) (2 nouveau(x), 3 modifié(s), 3 inchangé(s)), 8 détail(s), 11 CVE, 0 erreur(s).
+2026-08-16 00:23:30,063 [INFO] cyberwatch.collection: [fr] Source « fr » : 11 CVE (success) via html.
+2026-08-16 00:23:31,422 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/Process "HTTP/1.1 200 OK"
+2026-08-16 00:23:35,410 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/RelatedEfforts "HTTP/1.1 200 OK"
+2026-08-16 00:23:38,423 [INFO] httpx: HTTP Request: GET https://www.cve.org/About/Metrics "HTTP/1.1 200 OK"
+2026-08-16 00:23:41,358 [INFO] httpx: HTTP Request: GET https://www.cve.org/PartnerInformation/Partner "HTTP/1.1 200 OK"
+2026-08-16 00:23:44,074 [INFO] httpx: HTTP Request: GET https://www.cve.org/PartnerInformation/ListofPartners "HTTP/1.1 200 OK"
+2026-08-16 00:23:46,965 [INFO] httpx: HTTP Request: GET https://www.cve.org/ProgramOrganization/Structure "HTTP/1.1 200 OK"
+2026-08-16 00:23:49,238 [INFO] httpx: HTTP Request: GET https://www.cve.org/ProgramOrganization/ProgramRelationshipwithPartners "HTTP/1.1 200 OK"
+2026-08-16 00:23:51,807 [INFO] httpx: HTTP Request: GET https://www.cve.org/ProgramOrganization/Board "HTTP/1.1 200 OK"
+2026-08-16 00:23:54,929 [INFO] httpx: HTTP Request: GET https://www.cve.org/ProgramOrganization/WorkingGroups "HTTP/1.1 200 OK"
+2026-08-16 00:23:57,948 [INFO] httpx: HTTP Request: GET https://www.cve.org/ProgramOrganization/CNAs "HTTP/1.1 200 OK"
+2026-08-16 00:23:59,172 [ERROR] cyberwatch.collection: [programm] Source « programm » : délai dépassé (html).
+2026-08-16 00:24:00,799 [ERROR] cyberwatch.collection: [ancs] Source « ancs » : délai dépassé (html).
+2026-08-16 00:24:00,801 [INFO] cyberwatch.collection: [-] Source « fr » : succès à la 2e tentative.
+2026-08-16 00:24:00,812 [INFO] cyberwatch.collection.state: [state] Source « programm » → timeout (retry=3, détectées=0).
+2026-08-16 00:24:00,831 [INFO] cyberwatch.collection.state: [state] Source « nsit » → success (retry=0, détectées=2000).
+2026-08-16 00:24:00,838 [INFO] cyberwatch.collection.state: [state] Source « cisa » → success (retry=0, détectées=1665).
+2026-08-16 00:24:00,846 [INFO] cyberwatch.collection.state: [state] Source « microsoft » → success (retry=0, détectées=500).
+2026-08-16 00:24:00,851 [INFO] cyberwatch.collection.state: [state] Source « secalert » → success (retry=0, détectées=500).
+2026-08-16 00:24:00,857 [INFO] cyberwatch.collection.state: [state] Source « cvemon » → success (retry=0, détectées=11).
+2026-08-16 00:24:00,866 [INFO] cyberwatch.collection.state: [state] Source « tenable » → success (retry=0, détectées=60).
+2026-08-16 00:24:00,872 [INFO] cyberwatch.collection.state: [state] Source « fr » → success (retry=0, détectées=11).
+2026-08-16 00:24:00,878 [INFO] cyberwatch.collection.state: [state] Source « cvefind » → success (retry=0, détectées=10).
+2026-08-16 00:24:00,883 [INFO] cyberwatch.collection.state: [state] Source « opencve » → success (retry=0, détectées=22).
+2026-08-16 00:24:00,888 [INFO] cyberwatch.collection.state: [state] Source « csa3 » → success (retry=0, détectées=60).
+2026-08-16 00:24:00,892 [INFO] cyberwatch.collection.state: [state] Source « dgssi » → success (retry=0, détectées=9).
+2026-08-16 00:24:00,902 [INFO] cyberwatch.collection.state: [state] Source « ancs » → timeout (retry=3, détectées=0).
+2026-08-16 00:24:00,911 [INFO] cyberwatch.collection.state: [state] Source « therackerwire » → success (retry=0, détectées=10).
+2026-08-16 00:24:01,185 [INFO] cyberwatch.collection.monitored: Catalogue de surveillance : 80 produit(s) actif(s) (source=base).
+2026-08-16 00:24:04,752 [INFO] cyberwatch.collection: [-] Périmètre : 1452/4326 CVE retenues pour enrichissement (2874 hors produits surveillés).
+2026-08-16 00:24:04,821 [INFO] cyberwatch.collection: [-] 1452 CVE unique(s) : 149 nouvelle(s), 1303 déjà connue(s) — enrichissement en cours.
+2026-08-16 00:24:04,822 [INFO] cyberwatch.collection: [-] Enrichissement DÉSACTIVÉ (ENRICHMENT_ENABLED=false) : la collecte s'en tient aux sources configurées par l'administrateur.
+2026-08-16 00:24:05,912 [INFO] cyberwatch.collection: [-] Périmètre : 1271 CVE conservée(s), 181 écartée(s) après enrichissement (aucun produit surveillé correspondant).
+2026-08-16 00:24:12,718 [INFO] cyberwatch.collection: [-] COLLECTE TERMINÉE en 322352ms : 14 sources (12 succès, 0 vides, 2 en erreur), 4858 détectées, 149 nouvelles, 447 MAJ, 3055 hors périmètre, 1788 doublons, 30 notif.
+2026-08-16 00:24:12,738 [INFO] cyberwatch.notifications: Notifications email désactivées — 15 nouvelle(s), 15 mise(s) à jour (in-app uniquement).
+2026-08-16 00:24:12,766 [WARNING] cyberwatch.collection.state: [alerts] 5 alerte(s) active(s) : source_stale(programm), source_retries(programm), source_empty_streak(programm), source_stale(ancs), source_retries(ancs)
+2026-08-16 00:24:12,862 [INFO] cyberwatch.collection: [-] Vérification de cohérence : 0 CVE manquante(s) sur l'échantillon (742 vérifiée(s)).
+2026-08-16 00:24:12,926 [INFO] cyberwatch.scheduler: COLLECTE QUOTIDIENNE | échéance=2026-08-16 10:00 | déclencheur=windows_task | statut=degraded | échéance_honorée=OUI | retard=0 min | détectées=4858 | nouvelles=15 | MAJ=447 | sources=14 (ok=12, timeout=['programm', 'ancs'], échec=[]) | durée=322352ms | notif=30
+2026-08-16 00:24:13,202 [INFO] cyberwatch.collect_once: collect_once : TERMINÉ — statut=degraded | {'detected': 4858, 'new': 15, 'updated': 447, 'source_count': 14, 'successful_sources': ['nsit', 'cisa', 'microsoft', 'secalert', 'cvemon', 'tenable', 'fr', 'cvefind', 'opencve', 'csa3', 'dgssi', 'therackerwire'], 'failed_sources': [], 'timeout_sources': ['programm', 'ancs']}
+2026-08-16 00:24:13,203 [INFO] cyberwatch.collect_once: collect_once : code de sortie=0 (statut=degraded).
+2026-08-16 11:34:20,574 [INFO] cyberwatch.collect_once: ================ COLLECT_ONCE 2026-08-16T11:34:20 ================
+2026-08-16 11:34:23,578 [INFO] cyberwatch.collect_once: collect_once : démarrage (trigger=windows_task, force=False).
+2026-08-16 11:34:23,586 [INFO] cyberwatch.scheduler: [windows_task] Échéance 2026-08-16 10:00 DÉJÀ honorée (dernière=2026-08-16 10:00) — rien à faire.
+2026-08-16 11:34:23,602 [INFO] cyberwatch.collect_once: collect_once : TERMINÉ — statut=already_completed | {'due': '2026-08-16T10:00:00+01:00', 'trigger': 'windows_task'}
+2026-08-16 11:34:23,602 [INFO] cyberwatch.collect_once: collect_once : code de sortie=0 (statut=already_completed).

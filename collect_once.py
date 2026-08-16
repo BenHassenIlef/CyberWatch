@@ -122,6 +122,33 @@ async def _run(force: bool) -> str:
     return status
 
 
+async def _run_and_record(force: bool) -> int:
+    """Exécute la collecte ET consigne son résultat DANS LA MÊME BOUCLE D'ÉVÉNEMENTS.
+
+    Le client MongoDB (Motor) est lié à la boucle qui l'a créé : appeler `asyncio.run()` une
+    seconde fois pour enregistrer le résultat échouait avec « Event loop is closed », et la
+    trace était silencieusement perdue — précisément ce que cette trace doit éviter.
+    """
+    log = logging.getLogger("cyberwatch.collect_once")
+    try:
+        status = await _run(force)
+    except Exception as exc:  # noqa: BLE001 - toute erreur -> code non nul, mais TRACÉE
+        log.exception("collect_once : ÉCHEC inattendu : %s", exc)
+        await _record_outcome("failed", 1, str(exc)[:300])
+        return 1
+
+    code = 0 if status in _OK_EXIT else 1
+    # ÉCHEC VISIBLE : niveau ERROR (et non INFO) pour qu'une exécution planifiée ratée
+    # ressorte immédiatement dans logs/collect_once.log, sans lecture ligne à ligne.
+    if code == 0:
+        log.info("collect_once : code de sortie=0 (statut=%s).", status)
+    else:
+        log.error("collect_once : ÉCHEC — statut=%s, code de sortie=%d. "
+                  "L'échéance N'EST PAS honorée ; elle sera retentée.", status, code)
+    await _record_outcome(status, code)
+    return code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collecte CVE quotidienne (one-shot).")
     parser.add_argument("--force", action="store_true",
@@ -143,26 +170,10 @@ def main() -> int:
     log = logging.getLogger("cyberwatch.collect_once")
     log.info("================ COLLECT_ONCE %s ================", datetime.now().isoformat(timespec="seconds"))
     try:
-        status = asyncio.run(_run(args.force))
+        return asyncio.run(_run_and_record(args.force))
     except KeyboardInterrupt:
         log.warning("collect_once : interrompu (Ctrl-C).")
-        asyncio.run(_record_outcome("interrupted", 130, "Interrompu (Ctrl-C)."))
         return 130
-    except Exception as exc:  # noqa: BLE001 - toute erreur -> code non nul (la tâche journalise l'échec)
-        log.exception("collect_once : ÉCHEC inattendu : %s", exc)
-        asyncio.run(_record_outcome("failed", 1, str(exc)[:300]))
-        return 1
-
-    code = 0 if status in _OK_EXIT else 1
-    # ÉCHEC VISIBLE : niveau ERROR (et non INFO) pour qu'une exécution planifiée ratée
-    # ressorte immédiatement dans logs/collect_once.log, sans lecture ligne à ligne.
-    if code == 0:
-        log.info("collect_once : code de sortie=0 (statut=%s).", status)
-    else:
-        log.error("collect_once : ÉCHEC — statut=%s, code de sortie=%d. "
-                  "L'échéance N'EST PAS honorée ; elle sera retentée.", status, code)
-    asyncio.run(_record_outcome(status, code))
-    return code
 
 
 if __name__ == "__main__":
