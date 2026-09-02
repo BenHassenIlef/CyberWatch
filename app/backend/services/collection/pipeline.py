@@ -13,16 +13,22 @@ ne nécessite aucune modification de cet orchestrateur.
 """
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 
 from app.backend.core.config import settings
-from app.backend.services.collection import (dedup, enrichment, monitored, source_state as ss,
-                                             storage, translation)
+from app.backend.services.collection import (dedup, enrichment, isolation, monitored,
+                                             source_state as ss, storage, translation)
 from app.backend.services.collection.collectors import base as collectors
 from app.backend.services.collection.collectors.base import SourceParseError, SourceUnreachable
 from app.backend.services.collection.logs import RunLogger
 from app.backend.services.collection.schema import CANONICAL_KEYS, CVE_RE, add_source
 from app.backend.services.collection.source_manager import get_active_sources
 from app.backend.utils import utcnow
+
+# Journal TECHNIQUE du module. Ailleurs dans ce fichier, « logger » designe le RunLogger
+# recu en parametre, qui ecrit dans `collection_logs` : celui-ci sert aux diagnostics
+# internes, la ou aucun RunLogger n'est disponible.
+_journal = logging.getLogger("cyberwatch.collection.pipeline")
 
 NEW_ENRICH_MAX = 400        # borne de sécurité : nb max de NOUVELLES CVE enrichies / exécution
 UPDATE_ENRICH_BUDGET = 40   # nb max de CVE EXISTANTES ré-analysées (détection de mise à jour)
@@ -31,12 +37,74 @@ SOURCE_TIMEOUT = 150        # marge pour les portails d'avis deux niveaux (crawl
 
 ENRICH_CONCURRENCY = 6  # nb de CVE enrichies en parallèle (sources rapides, non limitées en débit)
 
+# COLLECTE EN DEUX VAGUES — corrige la perte des sources les plus autoritaires.
+#
+# Toutes les sources partaient ensemble. Les portails HTML ouvrent un navigateur Chromium et
+# parcourent plusieurs pages ; les API, elles, se contentent d'une requête. Lancés en même
+# temps, les premiers saturaient la machine et le lien réseau, et les secondes expiraient.
+#
+# Mesuré sur cette installation : NVD, le catalogue KEV de la CISA et l'API MSRC échouaient
+# TOUS LES TROIS en collecte complète (délai HTTP de 40 s dépassé, 0 CVE) alors que, lancés
+# seuls, ils répondent en 20 secondes et rapportent 2 210 vulnérabilités. On perdait donc
+# exactement les trois sources qui font autorité, sans que rien ne le signale : le rapport
+# annonçait « 6 sources en erreur » comme si les serveurs distants étaient en cause.
+#
+# Les API et flux passent donc EN PREMIER, seuls ; les portails HTML ensuite, par petits lots.
+METHODES_SANS_NAVIGATEUR = {"json", "xml", "rss", "sitemap"}
+SOURCES_HTML_SIMULTANEES = 3
+
+
+async def _collecter_par_vagues(sources: list[dict], logger: RunLogger) -> list[dict]:
+    """Collecte les sources en deux vagues. Renvoie les résultats DANS L'ORDRE des sources.
+
+    L'ordre est contractuel : l'appelant apparie `sources[i]` et `results[i]` pour journaliser
+    l'état de chaque source et faire avancer `last_sync_at`. Une correspondance décalée
+    attribuerait les CVE d'une source à une autre.
+    """
+    resultats: list[dict] = [None] * len(sources)                      # type: ignore[list-item]
+    legeres, lourdes = [], []
+    for i, s in enumerate(sources):
+        _, cle = collectors.resolve(s)
+        (legeres if cle in METHODES_SANS_NAVIGATEUR else lourdes).append(i)
+
+    if legeres:
+        logger.info(f"Vague 1 — {len(legeres)} source(s) d'API ou de flux, sans navigateur.")
+        obtenus = await asyncio.gather(*[_collect_one(sources[i], logger) for i in legeres])
+        for i, r in zip(legeres, obtenus):
+            resultats[i] = r
+
+    if lourdes:
+        logger.info(f"Vague 2 — {len(lourdes)} portail(s) HTML, "
+                    f"{SOURCES_HTML_SIMULTANEES} à la fois.")
+        for i, r in await _collecter_en_lots(sources, lourdes, logger):
+            resultats[i] = r
+    return resultats
+
+
+async def _collecter_en_lots(sources: list[dict], indices: list[int],
+                             logger: RunLogger) -> list[tuple[int, dict]]:
+    """Collecte les sources désignées, au plus `SOURCES_HTML_SIMULTANEES` en parallèle."""
+    verrou = asyncio.Semaphore(SOURCES_HTML_SIMULTANEES)
+
+    async def _borne(i: int) -> tuple[int, dict]:
+        async with verrou:
+            return i, await _collect_one(sources[i], logger)
+
+    return list(await asyncio.gather(*[_borne(i) for i in indices]))
+
 
 async def refresh_scope(db) -> None:
     """Recharge le catalogue des produits surveillés depuis la base (produits activés, domaines
     activés). Un produit ajouté ou désactivé dans « Produits surveillés » est ainsi pris en
     compte dès la collecte suivante, sans aucune modification de code."""
-    await monitored.seed_catalog(db)
+    # AMORÇAGE UNE SEULE FOIS, sur une base vierge.
+    #
+    # `seed_catalog` recrée les produits par défaut manquants. Appelé à CHAQUE collecte, il
+    # défaisait les décisions de l'administrateur : un produit supprimé dans « Produits
+    # surveillés » réapparaissait au passage suivant, et désactiver le dernier produit
+    # ramenait tout le catalogue codé en dur. Une fois la base peuplée, elle fait autorité.
+    if await db.monitored_products.count_documents({}) == 0:
+        await monitored.seed_catalog(db)
     await monitored.refresh_catalog(db)
 
 
@@ -49,6 +117,157 @@ def prefilter_scope(records: list[dict]) -> list[dict]:
     CVE qui ne sera pas conservée.
     """
     return [r for r in records if monitored.candidate(r)]
+
+
+def _bornes_du_jour() -> tuple[datetime, datetime]:
+    """Fenêtre de la veille du jour, en UTC naïf — le format stocké en base."""
+    from app.backend.core.config import settings
+    from app.backend.services.collection.scheduler import _tz
+
+    jours = max(1, int(getattr(settings, "DAILY_COLLECTION_WINDOW_DAYS", 1) or 1))
+    minuit = datetime.now(_tz()).replace(hour=0, minute=0, second=0, microsecond=0)
+    debut = (minuit - timedelta(days=jours - 1)).astimezone(timezone.utc).replace(tzinfo=None)
+    fin = (minuit + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    return debut, fin
+
+
+# Plafond de rattrapage. Une application arrêtée trois semaines ne doit pas rapatrier d'un
+# coup trois semaines de vulnérabilités : le consultant se retrouverait devant des centaines
+# de fiches sans savoir laquelle relève d'aujourd'hui. Au-delà, on s'en tient à la journée.
+RATTRAPAGE_MAX = timedelta(days=7)
+
+
+async def _bornes_de_la_veille(db) -> tuple[datetime, datetime, str]:
+    """Fenêtre RÉELLEMENT couverte par cette collecte : depuis la PRÉCÉDENTE, pas depuis minuit.
+
+    Renvoie (début, fin, motif).
+
+    POURQUOI PAS MINUIT
+    Une collecte du matin ne voit que ce qui a paru depuis minuit. Or la collecte précédente
+    a pu avoir lieu la veille à 10 h : tout ce qui a été publié entre 10 h et minuit tombe
+    alors dans un angle mort — ni « publié aujourd'hui », ni déjà collecté. Mesuré sur cette
+    installation : **13 heures** pendant lesquelles une vulnérabilité nouvelle était écartée
+    en silence, comme « ancienne et inconnue ».
+
+    Partir de la dernière collecte ferme ce trou par construction : deux passages successifs
+    couvrent toujours l'intervalle qui les sépare, quelle que soit l'heure à laquelle ils
+    tombent.
+
+    Le rattrapage est BORNÉ (voir `RATTRAPAGE_MAX`) et ne descend jamais sous minuit : la
+    fenêtre couvre au minimum la journée en cours, même après une collecte survenue il y a
+    dix minutes.
+    """
+    minuit, fin = _bornes_du_jour()
+
+    try:
+        precedente = await db.collection_runs.find_one(
+            {"status": "completed"}, sort=[("started_at", -1)])
+    except Exception as exc:  # noqa: BLE001 - sans historique, on retombe sur la journée
+        _journal.warning("Historique des collectes illisible (%s) : "
+                         "fenêtre ramenée à la journée en cours.", exc)
+        return minuit, fin, "journée en cours (historique indisponible)"
+
+    depart = (precedente or {}).get("started_at")
+    if not isinstance(depart, datetime):
+        return minuit, fin, "journée en cours (aucune collecte précédente)"
+
+    plancher = fin - RATTRAPAGE_MAX
+    if depart < plancher:
+        _journal.info("Dernière collecte le %s : au-delà du rattrapage de %d jours, "
+                      "la fenêtre est ramenée d'autant.",
+                      str(depart)[:16], RATTRAPAGE_MAX.days)
+        return plancher, fin, f"rattrapage plafonné à {RATTRAPAGE_MAX.days} jours"
+
+    # PLANCHER DE 24 HEURES, quoi qu'il arrive.
+    #
+    # Deux notions de « dernier passage » coexistent : celle du PIPELINE (dernière exécution)
+    # et celle de CHAQUE SOURCE (`last_sync_at`, qui n'avance qu'en cas de réussite). Elles
+    # divergent dès qu'une source échoue : celle-ci re-demandera deux jours de publications
+    # au passage suivant, que le filtre rejetterait comme « anciennes » si sa fenêtre s'était
+    # refermée sur la seule dernière exécution.
+    #
+    # Couvrir systématiquement les 24 dernières heures aligne les deux sans les coupler. Le
+    # surcoût est nul à l'arrivée : une vulnérabilité déjà collectée est reconnue par la
+    # déduplication et n'est ni ré-enregistrée, ni recomptée.
+    plancher_24h = fin - timedelta(days=2)
+    if depart >= minuit:
+        return min(minuit, plancher_24h), fin, "journée en cours et 24 h précédentes"
+
+    return depart, fin, f"depuis la collecte du {depart:%d/%m à %Hh%M}"
+
+
+def _compter_publiees_du_jour(records: list[dict]) -> int:
+    """Nombre de vulnérabilités PARUES aujourd'hui parmi celles détectées, périmètre ignoré.
+
+    Sert uniquement au rapport : c'est ce chiffre qui permet d'écrire « 36 vulnérabilités
+    publiées aujourd'hui, aucune ne concerne vos produits » plutôt qu'un « aucune CVE » muet
+    que rien ne distingue d'une panne.
+    """
+    debut, fin = _bornes_du_jour()
+    total = 0
+    for r in records:
+        publiee = r.get("published_at")
+        if not isinstance(publiee, datetime):
+            continue
+        p = publiee.replace(tzinfo=None) if publiee.tzinfo else publiee
+        if debut <= p < fin:
+            total += 1
+    return total
+
+
+async def filtrer_veille_du_jour(db, records: list[dict]) -> tuple[list[dict], int, int]:
+    """Veille du jour = NOUVEAUTÉS publiées aujourd'hui **+ MISES À JOUR** des CVE déjà suivies.
+
+    Renvoie (gardées, écartées, dont sans date).
+
+    DEUX natures d'actualité, et il faut les deux :
+
+      • une vulnérabilité PUBLIÉE aujourd'hui — c'est la veille au sens strict ;
+      • une vulnérabilité DÉJÀ EN BASE dont les données ont changé : score réévalué,
+        correctif publié, exploitation constatée. Sa date de publication est ancienne par
+        construction, mais l'information, elle, est du jour.
+
+    Ne garder que le premier cas — ce que faisait la version précédente de ce filtre —
+    supprimait toutes les mises à jour : un correctif publié ce matin pour une faille de la
+    semaine dernière n'atteignait plus le consultant. Ne garder aucun des deux critères
+    rapatriait au contraire des centaines de CVE anciennes jamais vues, qui noyaient les
+    nouvelles.
+
+    Une CVE INCONNUE et SANS date de publication est écartée : rien ne permet d'affirmer
+    qu'elle relève d'aujourd'hui. Elle reviendra dès qu'une source lui donnera une date.
+    """
+    from app.backend.core.config import settings
+
+    if not getattr(settings, "DAILY_COLLECTION_TODAY_ONLY", False):
+        return records, 0, 0, "filtre désactivé (toutes les CVE conservées)"
+
+    debut, fin, motif = await _bornes_de_la_veille(db)
+    identifiants = [r.get("cve_id") for r in records if r.get("cve_id")]
+    # Un seul aller-retour : les CVE déjà suivies sont celles dont la mise à jour compte.
+    connues = set()
+    if identifiants:
+        connues = {d["cve_id"] async for d in
+                   db.cves.find({"cve_id": {"$in": identifiants}}, {"cve_id": 1})}
+
+    gardees, ecartees, sans_date = [], 0, 0
+    for r in records:
+        if r.get("cve_id") in connues:
+            gardees.append(r)                 # déjà suivie : toute évolution est du jour
+            continue
+        publiee = r.get("published_at")
+        if not isinstance(publiee, datetime):
+            sans_date += 1
+            ecartees += 1
+            continue
+        p = publiee.replace(tzinfo=None) if publiee.tzinfo else publiee
+        if debut <= p < fin:
+            gardees.append(r)                 # nouveauté publiée aujourd'hui
+        else:
+            ecartees += 1                     # ancienne et inconnue : hors veille du jour
+    # Le MOTIF de la fenêtre remonte à l'appelant, qui l'inscrit dans le journal de collecte :
+    # « depuis la collecte du 26/08 à 10h02 » explique un volume inhabituel, là où une ligne
+    # muette laisserait croire à un dysfonctionnement.
+    return gardees, ecartees, sans_date, motif
 
 
 def tag_and_filter(records: list[dict]) -> tuple[list[dict], int]:
@@ -64,12 +283,28 @@ def tag_and_filter(records: list[dict]) -> tuple[list[dict], int]:
     """
     kept: list[dict] = []
     for rec in records:
-        hits = monitored.classify_all(rec)   # une CVE peut affecter PLUSIEURS produits
-        if not hits:
+        # Appariements GRADUÉS : chacun porte son niveau de confiance et sa preuve.
+        details = monitored.classify_detailed(rec)
+        retenus = [h for h in details if h["confidence"] != monitored.REJECTED]
+        if not retenus:
+            # Traçabilité : on note POURQUOI la CVE a été écartée quand un produit avait
+            # semblé correspondre. Sans cela, un rejet légitime est indiscernable d'un oubli.
+            rejetes = [h for h in details if h["confidence"] == monitored.REJECTED]
+            if rejetes:
+                rec["match_confidence"] = monitored.REJECTED
+                rec["match_evidence"] = rejetes[0]["evidence"]
             continue
-        rec["monitored_products"] = list(dict.fromkeys(h[0] for h in hits))
-        rec["domains"] = list(dict.fromkeys(h[1] for h in hits if h[1]))
-        rec["monitored_product"], rec["domain"] = hits[0]
+        rec["monitored_products"] = list(dict.fromkeys(h["product"] for h in retenus))
+        rec["domains"] = list(dict.fromkeys(h["domain"] for h in retenus if h["domain"]))
+        rec["monitored_product"] = retenus[0]["product"]
+        rec["domain"] = retenus[0]["domain"]
+        rec["match_confidence"] = retenus[0]["confidence"]
+        rec["match_evidence"] = retenus[0]["evidence"]
+        # DERNIÈRE BARRIÈRE avant la base : une fiche qui porte des données d'une autre
+        # vulnérabilité est marquée `needs_review` plutôt que publiée telle quelle. Elle
+        # n'est pas écartée — une vulnérabilité réelle ne disparaît pas parce qu'un de ses
+        # champs est douteux — mais l'anomalie cesse d'être invisible.
+        isolation.appliquer(rec)
         kept.append(rec)
     return kept, len(records) - len(kept)
 
@@ -225,18 +460,21 @@ async def run_collection(db, scope: str = "collect-all", source_ids: list | None
         logger.info(f"{len(sources)} source(s) à collecter"
                     f"{' (recouvrement partiel)' if source_ids else ''}.")
 
-        # 1-4) Parcours PARALLÈLE, chaque source isolée et tolérante aux pannes.
-        results = list(await asyncio.gather(*[_collect_one(s, logger) for s in sources]))
+        # 1-4) Parcours EN DEUX VAGUES, chaque source isolée et tolérante aux pannes :
+        # les API et flux d'abord, les portails HTML ensuite par petits lots (voir plus haut).
+        results = await _collecter_par_vagues(sources, logger)
 
         # Robustesse : seules FAILED/TIMEOUT/PARSE_ERROR sont ré-essayées UNE fois (jamais EMPTY).
+        # La reprise est BORNÉE elle aussi : relancer huit portails d'un coup reproduisait
+        # exactement la saturation qui les avait fait échouer, et la 2e tentative échouait
+        # pour la même raison que la première.
         retry_idx = [i for i, r in enumerate(results) if r["status"] in ss.RETRYABLE]
         if retry_idx:
             logger.info(f"Nouvelle tentative immédiate pour {len(retry_idx)} source(s) en échec.")
-            retried = await asyncio.gather(*[_collect_one(sources[i], logger) for i in retry_idx])
-            for k, i in enumerate(retry_idx):
-                if retried[k]["ok"]:
+            for i, r in await _collecter_en_lots(sources, retry_idx, logger):
+                if r["ok"]:
                     logger.info(f"Source « {sources[i].get('name')} » : succès à la 2e tentative.")
-                    results[i] = retried[k]
+                    results[i] = r
 
         all_records: list[dict] = []
         per_source = []
@@ -258,8 +496,13 @@ async def run_collection(db, scope: str = "collect-all", source_ids: list | None
                 # 5) last_sync (fenêtre incrémentale) n'avance que sur une collecte RÉUSSIE.
                 await db.sources.update_one(
                     {"_id": src["_id"]},
+                    # L'ERREUR PRÉCÉDENTE EST EFFACÉE. Elle survivait à la réussite suivante :
+                    # une source affichait « succès, 29 CVE » tout en portant encore
+                    # « timeout » comme dernière erreur. Qui lit cette fiche conclut à une
+                    # panne persistante, et cherche un problème qui n'existe plus.
                     {"$set": {"last_sync_at": utcnow(), "last_sync_status": res["status"],
-                              "last_sync_detected": res["detected"]}},
+                              "last_sync_detected": res["detected"]},
+                     "$unset": {"last_sync_error": ""}},
                 )
             else:
                 fail_count += 1
@@ -277,9 +520,31 @@ async def run_collection(db, scope: str = "collect-all", source_ids: list | None
         # sont conservées ici, l'enrichissement permettra de trancher juste après.
         await refresh_scope(db)
         before_scope = len(unique)
+
+        # COMBIEN A-T-ON VU PARAÎTRE AUJOURD'HUI, tous produits confondus ? Compté AVANT le
+        # périmètre de surveillance, sinon l'information est perdue.
+        #
+        # Sans ce chiffre, une journée sans vulnérabilité sur le parc surveillé s'affiche
+        # exactement comme une collecte en panne : « aucune CVE ». Le consultant n'a aucun
+        # moyen de distinguer « rien ne vous concerne aujourd'hui » — un fait rassurant — de
+        # « la collecte n'a rien rapporté » — une alerte. On mesure donc les deux.
+        publiees_du_jour = _compter_publiees_du_jour(unique)
+
         unique = prefilter_scope(unique)
         logger.info(f"Périmètre : {len(unique)}/{before_scope} CVE retenues pour enrichissement "
                     f"({before_scope - len(unique)} hors produits surveillés).")
+        logger.info(f"Publications du jour : {publiees_du_jour} vulnérabilité(s) parue(s) "
+                    f"aujourd'hui, toutes sources et tous produits confondus.")
+
+        # VEILLE DU JOUR : nouveautés publiées aujourd'hui ET mises à jour des CVE déjà
+        # suivies. Les portails d'avis listent en permanence des vulnérabilités anciennes ;
+        # sans cette borne, la collecte en rapatriait des centaines et noyait les nouvelles.
+        unique, ecartees, sans_date, fenetre = await filtrer_veille_du_jour(db, unique)
+        logger.info(f"Fenêtre de veille : {fenetre}.")
+        if ecartees:
+            logger.info(f"Veille du jour : {len(unique)} CVE conservée(s) (nouveautés du jour "
+                        f"+ mises à jour des CVE suivies) — {ecartees} écartée(s), dont "
+                        f"{sans_date} sans date de publication.")
 
         ids = [r["cve_id"] for r in unique]
         existing_ids = {d["cve_id"] async for d in db.cves.find({"cve_id": {"$in": ids}}, {"cve_id": 1})}
@@ -340,6 +605,10 @@ async def run_collection(db, scope: str = "collect-all", source_ids: list | None
             "sources_total": len(sources), "sources_ok": ok_count, "sources_failed": fail_count,
             "status_counts": status_counts,  # {success, empty, failed, timeout, parse_error}
             "cve_detected": detected_total, "cve_unique": len(unique),
+            # Vue d'ensemble de la journée : ce qui a paru, et ce qui vous concerne. Les deux
+            # chiffres se lisent ensemble — « 36 parues, 0 retenue » est une information
+            # complète ; « 0 retenue » seul ressemble à une panne.
+            "published_today": publiees_du_jour,
             "new_saved": saved["inserted"], "notified_new": saved["notified_new"],
             "updated": saved["updated"], "important_updates": saved["important_updates"],
             "notifications_created": notifications_created,
@@ -363,12 +632,20 @@ async def run_collection(db, scope: str = "collect-all", source_ids: list | None
         # Cycle de vie : on MET À JOUR l'entrée créée au début (jamais un doublon).
         await db.collection_runs.update_one({"_id": run_id}, {"$set": report})
 
-        if notifications_created:
-            try:
-                from app.backend.services import notifications as notif
-                await notif.notify_new_cves(db, saved["notified_new"], saved["notified_updates"])
-            except Exception as exc:  # noqa: BLE001 - l'email ne doit jamais casser la collecte
-                logger.error(f"Envoi des notifications email : {exc}")
+        # VEILLE PAR COURRIEL — appelée APRÈS CHAQUE COLLECTE, sans condition.
+        #
+        # L'envoi était conditionné aux notifications produites par CE passage. Une collecte
+        # qui ne détectait rien de neuf n'appelait donc même pas la fonction d'envoi, alors
+        # que des fiches non lues attendaient en base depuis les passages précédents : le
+        # consultant ne recevait rien et n'avait aucun moyen de distinguer « rien de neuf »
+        # d'une panne de la veille. C'est la couche de notification — et elle seule — qui sait
+        # ce que le consultant a déjà vu ; c'est donc à elle de décider s'il faut écrire.
+        try:
+            from app.backend.services import notifications as notif
+            await notif.notify_new_cves(db, saved["notified_new"], saved["notified_updates"],
+                                        published_today=publiees_du_jour)
+        except Exception as exc:  # noqa: BLE001 - l'email ne doit jamais casser la collecte
+            logger.error(f"Envoi des notifications email : {exc}")
 
         # Supervision : recalcul des alertes (sources périmées, trop d'échecs, vides récurrentes).
         try:

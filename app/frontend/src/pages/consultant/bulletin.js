@@ -24,6 +24,32 @@ function linksHTML(refs) {
   return arr.map((r) => `<div style="margin:2px 0">&bull;&nbsp;<a href="${esc(r)}">${esc(r)}</a></div>`).join("");
 }
 
+// Rend CLIQUABLES les URL contenues dans un texte libre (solution, remediation).
+// L'echappement HTML est fait AVANT : on ne cherche donc que des URL deja neutralisees,
+// ce qui interdit toute injection depuis le contenu collecte.
+const URL_RE = /(https?:\/\/[^\s<>"')\]]+)/g;
+
+function textWithLinks(value) {
+  if (!value) return '<span style="color:#999">—</span>';
+  return esc(value).replace(
+    URL_RE,
+    (u) => `<a href="${u}" target="_blank" rel="noreferrer">${u}</a>`
+  );
+}
+
+// SOLUTION : trois situations, jamais confondues. Le tiret muet employé jusqu'ici ne disait
+// pas si la remédiation manquait ou si elle n'existait pas ; le backend tranche désormais
+// (`solution_status`) et le bulletin se contente de rendre sa réponse.
+function solutionHTML(b) {
+  if (b.solution) return textWithLinks(b.solution);
+  const message =
+    b.solution_message ||
+    (b.solution_status === "aucun_correctif"
+      ? "Aucun correctif ou mesure de remédiation officielle identifié."
+      : "Les informations de remédiation n'ont pas pu être extraites de manière fiable.");
+  return `<span style="color:#666;font-style:italic">${esc(message)}</span>`;
+}
+
 const LABEL = "border:1px solid #000;padding:8px 10px;text-align:center;font-weight:bold;vertical-align:middle;width:26%";
 const CONTENT = "border:1px solid #000;padding:8px 12px;text-align:left;vertical-align:top";
 
@@ -33,7 +59,7 @@ function row(label, contentHTML) {
 }
 
 // Fragment <table> du bulletin normalisé (styles inline -> rendu identique en page et à l'impression).
-export function bulletinTableHTML(b, { logoUrl } = {}) {
+export function bulletinTableHTML(b, { logoUrl, showReferences = true } = {}) {
   const logo = logoUrl || `${window.location.origin}/logo-advancia.png`;
   const cves = b.cves || [];
   const ghsa = (b.identifiers && b.identifiers.ghsa) || [];
@@ -41,19 +67,50 @@ export function bulletinTableHTML(b, { logoUrl } = {}) {
   const score = b.cvss_score != null && b.cvss_score !== "" ? Number(b.cvss_score).toFixed(1) : "—";
   const idsLine = [...cves, ...ghsa];
 
+  // CVE la plus grave RÉELLEMENT présente dans ce bulletin. Le maximum est recalculé sur les
+  // vulnérabilités listées, et non repris de l'agrégat : un bulletin borné à 80 CVE pourrait
+  // afficher un score maximal qui ne figure sur aucune ligne, et aucune ne serait mise en
+  // évidence. Plusieurs CVE peuvent partager ce maximum — elles sont toutes signalées.
+  const scoreParCve = {};
+  (b.vulnerabilities || []).forEach((v) => {
+    if (v && v.cve_id && typeof v.cvss_score === "number") scoreParCve[v.cve_id] = v.cvss_score;
+  });
+  const valeurs = Object.values(scoreParCve);
+  const scoreMax = valeurs.length ? Math.max(...valeurs) : null;
+  const lesPlusGraves = new Set(
+    scoreMax != null ? Object.keys(scoreParCve).filter((c) => scoreParCve[c] === scoreMax) : []
+  );
+  // LES PLUS GRAVES EN TÊTE : un bulletin qui aligne des dizaines d'identifiants doit
+  // commencer par ceux qui appellent une action, et non par le premier venu.
+  idsLine.sort((a, b2) => (scoreParCve[b2] ?? -1) - (scoreParCve[a] ?? -1));
+
   const productCell = `
     <div style="font-weight:bold;font-size:16px;margin-bottom:8px">${esc(b.title || (b.products || [])[0] || "—")}</div>
     ${b.vendor ? `<div style="margin-bottom:8px">Éditeur : <b>${esc(b.vendor)}</b></div>` : ""}
-    ${idsLine.length ? idsLine.map((c) => `<div style="font-weight:bold">${esc(c)}</div>`).join("") : '<span style="color:#999">—</span>'}`;
+    ${idsLine.length
+      ? idsLine.map((c) => {
+          const score = scoreParCve[c];
+          return lesPlusGraves.has(c)
+            // La vulnérabilité la plus grave du lot est signalée EN ROUGE, avec son score :
+            // c'est par elle qu'un consultant commence, et un bulletin qui en aligne huit
+            // sans hiérarchie l'oblige à ouvrir chaque fiche pour le découvrir.
+            ? `<div style="font-weight:bold;color:#b91c1c">${esc(c)}` +
+              (score != null ? ` <span style="font-size:12px">(CVSS ${score.toFixed(1)})</span>` : "") +
+              `</div>`
+            : `<div style="font-weight:bold">${esc(c)}</div>`;
+        }).join("")
+      : '<span style="color:#999">—</span>'}`;
 
-  // Source OFFICIELLE de la vulnérabilité (avis éditeur, sinon autorité publique) — à ne pas
-  // confondre avec `collection_source`, la page où CyberWatch AI a découvert l'information.
+  // SITE OFFICIEL du produit vulnérable : celui de son ÉDITEUR, ou l'avis de sécurité qu'il
+  // publie. Ni la page de collecte, ni une base de vulnérabilités — NVD, CVE.org et les avis
+  // GitHub restent dans « Références ». Quand l'éditeur n'est pas identifiable de façon
+  // vérifiable, on l'écrit : « Non identifié » informe, un tiret laisse croire à un oubli.
   const official = b.official_source || {};
   const officialUrl = official.url || b.official_url;
   const officialCell = officialUrl
     ? (official.name ? `<div style="font-weight:bold">${esc(official.name)}</div>` : "") +
       `<a href="${esc(officialUrl)}">${esc(officialUrl)}</a>`
-    : '<span style="color:#999">—</span>';
+    : '<span style="color:#999;font-style:italic">Non identifié</span>';
 
   return `
 <table style="width:100%;border-collapse:collapse;border:1px solid #000;font-family:'Times New Roman',Georgia,serif;font-size:14px;color:#111;line-height:1.4">
@@ -75,9 +132,12 @@ export function bulletinTableHTML(b, { logoUrl } = {}) {
     ${row("Systèmes affectés", bulletsHTML(b.affected_systems))}
     ${row("Sévérité / Score", `<b>${esc(severity)}</b>&nbsp;&nbsp;/&nbsp;&nbsp;${esc(score)}`)}
     ${b.vulnerability_type ? row("Type de vulnérabilité", esc(b.vulnerability_type)) : ""}
-    ${row("Solution", b.solution ? esc(b.solution) : '<span style="color:#999">—</span>')}
-    ${row("Références", linksHTML(b.references))}
+    ${row("Solution", solutionHTML(b))}
+    ${showReferences ? row("Références", linksHTML(b.references)) : ""}
     ${row("Date de publication", fmtDate(b.publication_date) ? esc(fmtDate(b.publication_date)) : '<span style="color:#999">—</span>')}
+    ${row("Dernière mise à jour", fmtDate(b.update_date)
+        ? esc(fmtDate(b.update_date))
+        : '<span style="color:#999;font-style:italic">Non disponible</span>')}
     ${row("Source officielle", officialCell)}
   </tbody>
 </table>`;

@@ -1,0 +1,32 @@
+# Contexte de build : on exclut tout ce qui alourdit l'image ou ne doit JAMAIS y entrer.
+
+# --- SECRETS : le .env contient la cle LLM et le secret JWT. Il est fourni au CONTENEUR a
+#     l'execution (env_file dans docker-compose.yml), jamais copie dans l'image.
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# --- Environnements locaux (specifiques a l'hote, inutilisables en conteneur)
+app/backend/.venv/
+app/frontend/node_modules/
+app/frontend/dist/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Donnees et journaux locaux
+logs/
+docs/
+
+# --- Outils de l'hote (Windows) sans objet en conteneur Linux
+*.ps1
+
+# --- Divers
+.git/
+.gitignore
+.claude/
+.vscode/
+.idea/
+*.md
+!README.md

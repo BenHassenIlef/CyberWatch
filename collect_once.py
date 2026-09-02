@@ -122,6 +122,49 @@ async def _run(force: bool) -> str:
     return status
 
 
+# ATTENTE DU RESEAU — controle fait ICI, et non delegue a Windows.
+#
+# Le planificateur Windows propose « n executer que si le reseau est disponible ». Sa detection
+# (NLA) juge parfois indisponible un reseau parfaitement fonctionnel — VPN, connexion dite
+# limitee, profil non identifie — et l execution est alors PUREMENT ET SIMPLEMENT sautee, sans
+# trace exploitable. Constate en production : une journee entiere sans collecte.
+#
+# On lance donc toujours la tache, et c est le programme qui attend le reseau : l attente est
+# bornee, journalisee, et son echec laisse une trace consultable.
+SONDES_RESEAU = ("https://services.nvd.nist.gov/rest/json/cves/2.0?resultsPerPage=1",
+                 "https://api.stackexchange.com/2.3/info?site=security")
+ATTENTES_RESEAU = (0, 30, 60, 120, 240)   # secondes avant chaque tentative
+
+
+async def _attendre_le_reseau() -> bool:
+    """True des qu une source repond. Attentes croissantes, bornees a ~7 minutes.
+
+    Au reveil d une machine, la connectivite met souvent une a deux minutes a s etablir :
+    partir immediatement faisait expirer les quatorze sources d un bloc et produisait une
+    collecte vide en moins d une minute.
+    """
+    import httpx
+
+    log = logging.getLogger("cyberwatch.collect_once")
+    for i, attente in enumerate(ATTENTES_RESEAU, start=1):
+        if attente:
+            log.info("Reseau indisponible : nouvel essai dans %ds (%d/%d).",
+                     attente, i, len(ATTENTES_RESEAU))
+            await asyncio.sleep(attente)
+        for url in SONDES_RESEAU:
+            try:
+                async with httpx.AsyncClient(timeout=15) as c:
+                    if (await c.get(url)).status_code < 500:
+                        if i > 1:
+                            log.info("Reseau retabli apres %d tentative(s).", i)
+                        return True
+            except Exception:  # noqa: BLE001 - sonde en echec : on retente plus tard
+                continue
+    log.error("Aucune source joignable apres %d tentatives : collecte ABANDONNEE. "
+              "L echeance n est pas honoree et sera retentee.", len(ATTENTES_RESEAU))
+    return False
+
+
 async def _run_and_record(force: bool) -> int:
     """Exécute la collecte ET consigne son résultat DANS LA MÊME BOUCLE D'ÉVÉNEMENTS.
 
@@ -130,6 +173,13 @@ async def _run_and_record(force: bool) -> int:
     trace était silencieusement perdue — précisément ce que cette trace doit éviter.
     """
     log = logging.getLogger("cyberwatch.collect_once")
+
+    # Sans reseau, une collecte ne rapporte rien mais MARQUE l echeance comme traitee : la
+    # veille du jour serait perdue jusqu au lendemain. On prefere echouer explicitement.
+    if not await _attendre_le_reseau():
+        await _record_outcome("failed", 1, "reseau indisponible")
+        return 1
+
     try:
         status = await _run(force)
     except Exception as exc:  # noqa: BLE001 - toute erreur -> code non nul, mais TRACÉE

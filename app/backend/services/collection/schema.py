@@ -94,6 +94,9 @@ CANONICAL_KEYS = (
     "fixed_version", "platform", "solution", "patch_links", "detail_url",
     # Portails CERT à identifiants d'avis (tunCERT/ANCS, CERT-FR…).
     "advisory_id", "advisory_ids", "associated_cves",
+    # MÉTADONNÉES D'AVIS — appartiennent au bulletin, JAMAIS à la CVE. Séparées pour qu'une
+    # republication d'avis ne puisse plus rajeunir la vulnérabilité qu'il cite.
+    "advisory_title", "advisory_url", "advisory_published_at", "advisory_updated_at",
 )
 
 # Champs listes (fusionnés par UNION entre sources) vs scalaires (résolus par priorité).

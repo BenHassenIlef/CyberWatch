@@ -10,7 +10,17 @@ import SearchInput from "../../components/ui/SearchInput";
 import api from "../../api/axios";
 import { useConsultantNavItems } from "./navItems";
 
-const EMPTY = { name: "", vendor: "", domain: "" };
+// `history_days` : fenêtre de la COLLECTE INITIALE lancée dès l'ajout du produit (recherche
+// ciblée NVD sur son nom). 30 jours par défaut — sans cela, un produit ajouté resterait vide
+// jusqu'à ce qu'une source publie spontanément l'une de ses CVE.
+const EMPTY = { name: "", vendor: "", domain: "", history_days: 30 };
+
+const HISTORY_OPTIONS = [
+  { value: 0, label: "Aucune — surveiller à partir de maintenant" },
+  { value: 7, label: "7 derniers jours" },
+  { value: 30, label: "30 derniers jours (recommandé)" },
+  { value: 90, label: "90 derniers jours" },
+];
 const field = "w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100";
 
 export default function Monitoring() {
@@ -66,11 +76,16 @@ export default function Monitoring() {
     const payload = { name: form.name.trim(), vendor: form.vendor.trim(), domain: form.domain.trim() };
     try {
       if (editing) {
+        // `history_days` ne concerne QUE la création : une modification ne doit pas relancer
+        // une collecte historique à chaque enregistrement.
         await api.put(`/consultant/monitoring/products/${editing}`, payload);
         notify("Produit modifié avec succès.");
       } else {
-        await api.post("/consultant/monitoring/products", payload);
-        notify("Produit ajouté avec succès.");
+        const days = Number(form.history_days) || 0;
+        await api.post("/consultant/monitoring/products", { ...payload, history_days: days });
+        notify(days
+          ? `Produit ajouté. Collecte initiale lancée sur les ${days} derniers jours — les CVE trouvées apparaîtront d'ici quelques minutes.`
+          : "Produit ajouté. Il sera pris en compte dès la prochaine collecte.");
       }
       setModal(false);
       await load();
@@ -179,6 +194,21 @@ export default function Monitoring() {
               {domains.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
             </select>
           </div>
+          {/* Collecte initiale : uniquement à la CRÉATION (une modification ne relance rien). */}
+          {!editing && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">Collecte initiale</label>
+              <select className={field} value={form.history_days}
+                      onChange={(e) => setForm({ ...form, history_days: Number(e.target.value) })}>
+                {HISTORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+              <p className="mt-1 text-xs text-slate-400">
+                Recherche immédiatement les vulnérabilités déjà publiées pour ce produit, en
+                interrogeant NVD sur son nom et ses variantes. Sans cela, le produit reste vide
+                jusqu'à ce qu'une source publie spontanément l'une de ses CVE.
+              </p>
+            </div>
+          )}
           {error && <p className="text-sm text-rose-600">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="secondary" onClick={() => setModal(false)}>Annuler</Button>

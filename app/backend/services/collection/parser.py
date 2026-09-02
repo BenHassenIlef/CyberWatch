@@ -8,6 +8,7 @@
 import json
 
 from app.backend.services.collection import net
+from app.backend.services.collection import sanitize
 from app.backend.services.collection.schema import (
     CVE_RE, new_record, parse_dt, norm_severity, severity_from_score,
 )
@@ -185,6 +186,9 @@ def extract_from_json_object(obj: dict, detail_url: str | None = None) -> dict |
         product, cpe_vendor = _extract_cpe_product(obj)
         vendor = vendor or cpe_vendor
     rec["product"] = product if isinstance(product, str) else None
+    # Assainissement GLOBAL : une valeur douteuse (CSS, titre de page) devient None
+    # plutot que d'entrer en base. Regle unique, partagee par tous les collecteurs.
+    sanitize.clean_record(rec)
     rec["vendor"] = vendor if isinstance(vendor, str) else None
     if rec["product"]:
         rec["affected_products"] = [rec["product"]]

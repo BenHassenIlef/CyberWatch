@@ -2,14 +2,16 @@ from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response,
+                     status)
 
 from app.backend.db.mongodb import get_database
 from app.backend.dependencies.auth import require_role
 from app.backend.schemas.schedule import CollectionScheduleUpdate
 from app.backend.services.audit import log_action
 from app.backend.services.collection import (advisory_bulletin, bulletin_pdf, enrichment,
-                                             product_bulletin, translation)
+                                             pipeline, product_bulletin, provenance,
+                                             translation)
 from app.backend.services.collection.schema import CANONICAL_KEYS, CVE_RE, LIST_FIELDS
 from app.backend.utils import serialize_doc, utcnow
 
@@ -56,25 +58,54 @@ def _cve_out(cve: dict, sources: dict) -> dict:
 # Projection LISTE : uniquement les champs affichés dans le tableau (documents réduits = rapide).
 _LIST_PROJECTION = {
     "cve_id": 1, "title": 1, "product": 1, "affected_products": 1, "vuln_type": 1, "category": 1,
+    # EDITEUR — « C# Driver » ne dit pas de quel logiciel il s'agit ; « MongoDB / C# Driver »
+    # le dit. Le champ est renseigne sur 91 % des fiches ; les 9 % restants s'affichent en
+    # « Non identifie » plutot qu'en tiret muet, qui laisserait croire a un oubli.
+    "vendor": 1,
     "cvss_score": 1, "severity": 1, "published_at": 1, "updated_at": 1, "collected_at": 1,
+    # Dernier passage de collecte : distingue une fiche revue aujourd'hui d'une fiche
+    # simplement découverte il y a des mois.
+    "last_collected": 1,
     "is_new": 1, "source_id": 1, "source_name": 1, "sources": 1,
     # Titre traduit (affiché à la place de l'original quand il existe) + état de traduction.
     "title_fr": 1, "translation_status": 1,
     # Synchronisation incrémentale (badge « Mise à jour », complétude, temps relatif).
     "is_updated": 1, "update_unread": 1, "information_completeness": 1, "first_published": 1,
     "sync_status": 1, "change_summary": 1,
+    # DATE DE DÉTECTION du changement par l'application — à ne pas confondre avec
+    # `updated_at`, qui est la date de révision annoncée par la SOURCE.
+    #
+    # L'onglet « Mises à jour aujourd'hui » filtre sur ce champ, mais affichait `updated_at` :
+    # une CVE détectée comme modifiée aujourd'hui apparaissait avec la date « 13/08 » que
+    # l'éditeur avait apposée à sa révision. La liste semblait alors montrer de vieilles
+    # mises à jour, alors qu'elle montrait exactement ce qu'on lui demandait.
+    "last_important_update": 1,
 }
 
 
 def _parse_day(s: str | None, end: bool = False):
-    """« YYYY-MM-DD » -> datetime (début, ou fin de journée). None si absent/invalide."""
+    """« YYYY-MM-DD » -> datetime UTC NAÏF (début, ou fin de journée). None si invalide.
+
+    La journée est celle du fuseau de l'APPLICATION, converti dans le format stocké en base —
+    exactement la convention de `_day_bounds`. Sans cette conversion, le jour sélectionné
+    dans l'interface commençait à minuit UTC alors que « aujourd'hui » commence à minuit
+    local : deux définitions du même jour cohabitaient, décalées de l'offset du fuseau, et
+    une CVE publiée en fin de soirée basculait dans la mauvaise journée selon le filtre
+    employé.
+    """
     if not s:
         return None
+    from app.backend.services.collection.scheduler import _tz
+
     try:
-        d = datetime.strptime(s[:10], "%Y-%m-%d")
-        return d.replace(hour=23, minute=59, second=59) if end else d
+        jour = datetime.strptime(s[:10], "%Y-%m-%d")
     except ValueError:
         return None
+    minuit_local = jour.replace(tzinfo=_tz())
+    debut = minuit_local.astimezone(timezone.utc).replace(tzinfo=None)
+    # Fin de journée = la seconde précédant le minuit local SUIVANT (bornes incluses côté
+    # appelant), ce qui couvre la journée entière quel que soit le décalage.
+    return (debut + timedelta(days=1) - timedelta(seconds=1)) if end else debut
 
 
 @router.get("/cves")
@@ -87,6 +118,7 @@ async def list_cves(
     date_to: str | None = Query(None),
     only_new: bool = Query(False),
     collected_today: bool = Query(False),  # vue « Collectées aujourd'hui » (date de collecte)
+    updated_today: bool = Query(False),    # vue « Mises à jour aujourd'hui » (fiches déjà suivies)
     published_today: bool = Query(False),  # vue « Publiées aujourd'hui » (date OFFICIELLE)
     sort_by: str = Query("date"),  # "date" | "cvss" | "collected"
     order: str = Query("desc"),    # "desc" | "asc"
@@ -94,7 +126,11 @@ async def list_cves(
     limit: int = Query(20, ge=1, le=100),
 ):
     db = get_database()
-    query: dict = {}
+    # Les enregistrements RÉVOQUÉS par le programme CVE (« DO NOT USE THIS CVE RECORD »)
+    # ne sont pas des vulnérabilités : les compter et les afficher parmi les autres serait
+    # une information fausse. Ils restent en base — la trace du retrait a sa valeur — mais
+    # sortent des listes de veille.
+    query: dict = {"cve_status": {"$ne": "rejected"}}
     if severity:
         query["severity"] = severity
     if product:
@@ -107,9 +143,39 @@ async def list_cves(
     if only_new:
         query["is_new"] = True
     if collected_today:
-        # Vue « activité de collecte du jour » : filtrée sur la date de COLLECTE, triée par collecte.
-        query["collected_at"] = {"$gte": _start_of_today_utc()}
+        # COLLECTÉES AUJOURD'HUI = ENTRÉES EN BASE AUJOURD'HUI. Rien d'autre.
+        #
+        # Cette vue mêlait auparavant deux choses : les fiches découvertes du jour ET les
+        # fiches anciennes dont les données avaient changé. Le résultat affichait « Collectée
+        # le 12/08 » dans un onglet intitulé « Collectées aujourd'hui » — un onglet qui
+        # contredit sa propre colonne ne peut inspirer aucune confiance.
+        #
+        # Ce mélange se justifiait tant qu'aucune vue ne montrait les mises à jour. L'onglet
+        # « Mises à jour aujourd'hui » existe désormais et les présente correctement : les
+        # deux vues sont maintenant DISJOINTES, et chacune tient exactement la promesse de
+        # son intitulé.
+        #
+        # `collected_at` — et non `last_collected` — est la date de PREMIÈRE découverte.
+        # Filtrer sur le dernier passage remplirait la liste de centaines de CVE de 2019
+        # simplement revues sans avoir bougé.
+        debut, fin = _day_bounds()
+        query["collected_at"] = {"$gte": debut, "$lt": fin}
         sort_by = "collected"
+    if updated_today:
+        # MISES À JOUR DU JOUR — fiches connues DEPUIS PLUS LONGTEMPS dont les données ont
+        # changé aujourd'hui : score réévalué, correctif publié, référence ajoutée.
+        #
+        # Distinct de « Collectées aujourd'hui », qui mêle nouveautés et mises à jour : un
+        # consultant qui a déjà traité la veille du matin veut savoir ce qui a BOUGÉ sur des
+        # vulnérabilités qu'il connaît, sans re-parcourir les nouvelles.
+        debut, _fin = _day_bounds()
+        query["last_important_update"] = {"$gte": debut}
+        # DÉTECTÉE AVANT AUJOURD'HUI : c'est ce qui distingue une mise à jour d'une
+        # nouveauté. Une fiche découverte ce matin et complétée dans la foulée n'est pas
+        # une « mise à jour » pour le consultant — elle est simplement nouvelle.
+        query["collected_at"] = {"$lt": debut}
+        sort_by = "collected"
+
     if published_today:
         # Vue « CVE PUBLIÉES aujourd'hui » : date OFFICIELLE de publication de la CVE, jamais la
         # date de collecte ni de mise à jour. Filtrage poussé côté MongoDB (index published_at).
@@ -134,7 +200,9 @@ async def list_cves(
 
     # PAGINATION CÔTÉ MONGODB : tri + skip + limit + projection. On ne charge QUE la page demandée
     # (~20 documents réduits), plus toute la collection -> affichage quasi instantané.
-    sort_field = {"cvss": "cvss_score", "collected": "collected_at"}.get(sort_by, "published_at")
+    # Tri « collecte » : sur le DERNIER passage, pour que les mises a jour du jour remontent
+    # en tete au meme titre que les nouveautes.
+    sort_field = {"cvss": "cvss_score", "collected": "last_collected"}.get(sort_by, "published_at")
     direction = 1 if order == "asc" else -1
     total = await db.cves.count_documents(query)
     page = await (
@@ -197,8 +265,15 @@ async def cve_stats():
     db = get_database()
     total = await db.cves.count_documents({})
     new = await db.cves.count_documents({"is_new": True})
-    today = _start_of_today_utc()
-    collected_today = await db.cves.count_documents({"collected_at": {"$gte": today}})
+    debut, fin = _day_bounds()
+    # MÊME DÉFINITION QUE LA VUE : entrées en base aujourd'hui. Un compteur qui ne compte pas
+    # ce que la liste affiche envoie le consultant chercher des lignes qui n'existent pas.
+    collected_today = await db.cves.count_documents(
+        {"collected_at": {"$gte": debut, "$lt": fin}})
+    # Fiches ANCIENNES dont un changement a été détecté aujourd'hui — l'onglet « Mises à jour
+    # aujourd'hui ». Distinct du précédent : les deux ensembles ne se recouvrent jamais.
+    updated_today = await db.cves.count_documents(
+        {"last_important_update": {"$gte": debut}, "collected_at": {"$lt": debut}})
     # Compteur BORNÉ à la journée : sans borne haute, une CVE datée du futur (erreur de source)
     # serait comptée comme « publiée aujourd'hui ».
     published_today = await db.cves.count_documents(published_today_filter())
@@ -206,6 +281,7 @@ async def cve_stats():
     for level in ("critical", "high", "medium", "low"):
         by_severity[level] = await db.cves.count_documents({"severity": level})
     return {"total": total, "new": new, "collected_today": collected_today,
+            "updated_today": updated_today,
             "published_today": published_today, **by_severity}
 
 
@@ -258,6 +334,11 @@ async def _aggregate_on_demand(db, oid, cve: dict) -> dict:
     merged, confirmed = await enrichment.enrich(cve["cve_id"], seed=cve, use_nvd=True)
 
     set_fields: dict = {"enriched_at": utcnow()}
+    # Les valeurs viennent de sources d'AUTORITÉ interrogées par identifiant CVE : elles sont
+    # donc écrites AVEC leur provenance, et soumises aux mêmes garde-fous que la collecte.
+    # Sans cela, ce chemin contournerait la protection anti-contamination de `storage`.
+    source = confirmed[0] if confirmed else "enrichment"
+    travail = {"provenance": dict(cve.get("provenance") or {})}
     for key in CANONICAL_KEYS:
         if key == "detail_url":
             continue
@@ -265,8 +346,22 @@ async def _aggregate_on_demand(db, oid, cve: dict) -> dict:
             union = list(dict.fromkeys((cve.get(key) or []) + (merged.get(key) or [])))
             if len(union) != len(cve.get(key) or []):
                 set_fields[key] = union
-        elif not cve.get(key) and merged.get(key):  # on complète seulement les champs vides
-            set_fields[key] = merged[key]
+            continue
+        valeur = merged.get(key)
+        if valeur in (None, "", []):
+            continue
+        # Ne jamais dégrader le barème CVSS déjà en base (4.0 -> 3.1 serait un recul).
+        if key in ("cvss_score", "cvss_vector") and not provenance.allows_cvss_replacement(
+                cve.get("cvss_vector"), merged.get("cvss_vector")):
+            continue
+        champ_prov = "cve_published_at" if key == "published_at" else key
+        if provenance.apply(travail, champ_prov, valeur, source, merged.get("detail_url"),
+                            provenance.VERIFIED):
+            set_fields[key] = valeur
+    if travail["provenance"] != (cve.get("provenance") or {}):
+        set_fields["provenance"] = travail["provenance"]
+        set_fields["validation_status"] = provenance.validation_status(
+            {**cve, **set_fields, "provenance": travail["provenance"]})
     if confirmed:
         conf = list(dict.fromkeys((cve.get("confirmed_sources") or []) + confirmed))
         set_fields["confirmed_sources"] = conf
@@ -313,7 +408,17 @@ async def _cached_bulletin(db, url: str, seed: dict | None, refresh: bool) -> di
     contrôle de version, les anciens documents continueraient d'exposer les champs retirés et
     une « source officielle » calculée selon l'ancienne règle.
     """
-    cached = await db.bulletins.find_one({"_id": url})
+    # CLÉ DE CACHE : l'URL **et** la CVE.
+    #
+    # Une même page de collecte couvre souvent des centaines de vulnérabilités — un portail
+    # éditeur, un bulletin d'autorité, une revue de presse. Indexé sur la seule URL, le cache
+    # rendait à TOUTES ces fiches le bulletin de la première consultée : mauvais éditeur,
+    # mauvaise source officielle, mauvaise remédiation. Le bulletin d'une fiche est propre à
+    # sa CVE ; sa clé doit l'être aussi. Les bulletins « par URL » (sans fiche) gardent la
+    # leur, inchangée.
+    cle = f"{url}#{seed['cve_id']}" if seed and seed.get("cve_id") else url
+
+    cached = await db.bulletins.find_one({"_id": cle})
     if cached and not refresh:
         built = cached.get("built_at")
         fresh = isinstance(built, datetime) and \
@@ -324,8 +429,8 @@ async def _cached_bulletin(db, url: str, seed: dict | None, refresh: bool) -> di
     bulletin = await advisory_bulletin.build_bulletin(url, seed=seed, db=db)
     # REMPLACEMENT complet (et non « $set ») : un « $set » conserverait les clés d'un modèle
     # antérieur — les champs retirés du bulletin réapparaîtraient depuis le cache.
-    await db.bulletins.replace_one({"_id": url}, {**bulletin, "_id": url}, upsert=True)
-    return serialize_doc({**bulletin, "_id": url})
+    await db.bulletins.replace_one({"_id": cle}, {**bulletin, "_id": cle}, upsert=True)
+    return serialize_doc({**bulletin, "_id": cle})
 
 
 @router.get("/bulletin")
@@ -334,6 +439,52 @@ async def bulletin_from_url(url: str = Query(..., description="URL de la page d'
     """Génère un bulletin normalisé depuis N'IMPORTE QUELLE page d'avis (moteur générique)."""
     db = get_database()
     return await _cached_bulletin(db, url, seed=None, refresh=refresh)
+
+
+@router.get("/cves/{cve_id}/community-discussions")
+async def community_discussions(cve_id: str, refresh: bool = Query(False)):
+    """DISCUSSIONS PUBLIQUES mentionnant cette CVE — couche d'enrichissement, jamais officielle.
+
+    Ces échanges n'alimentent AUCUN champ de la fiche : ni la solution, ni les produits
+    affectés, ni les références, ni le score. Ils sont lus depuis une collection distincte et
+    renvoyés séparément, pour que rien ne puisse se confondre avec un avis d'éditeur.
+
+    `refresh` relance la recherche auprès des communautés ; sinon on sert ce qui est déjà
+    vérifié en base, sans dépendre de la disponibilité des sources externes.
+    """
+    from app.backend.services.community import discussions as dc
+
+    db = get_database()
+    if not CVE_RE.fullmatch(cve_id.upper()):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Identifiant CVE invalide.")
+
+    etats_sources: list[dict] = []
+    existantes = await dc.lire(db, cve_id)
+    if refresh or not existantes:
+        trouvees, etats_sources = await dc.rechercher(cve_id)
+        if trouvees:
+            await dc.enregistrer(db, trouvees)
+        existantes = await dc.lire(db, cve_id)
+
+    resume, origine = await dc.resume_communautaire(existantes)
+    return {
+        "cve_id": cve_id.upper(),
+        "community_summary": resume,
+        "summary_origin": origine,
+        "discussions": [serialize_doc(d) for d in existantes],
+        # ÉTAT DE CHAQUE SOURCE, jamais réduit à un booléen.
+        #
+        # « aucun résultat », « indisponible » et « non configurée » sont trois situations
+        # distinctes : la première est un fait sur la communauté, la deuxième une panne
+        # passagère, la troisième une action attendue de l'administrateur. Les confondre
+        # ferait croire au consultant que personne n'a discuté de la vulnérabilité.
+        #
+        # Aucun identifiant ni jeton d'accès ne transite ici : uniquement un statut et un
+        # motif rédigé pour un lecteur humain.
+        "sources": etats_sources,
+        "disclaimer": ("Ces informations proviennent de discussions publiques et ne "
+                       "remplacent pas les recommandations officielles de l'éditeur."),
+    }
 
 
 @router.get("/cves/{cve_id}/bulletin")
@@ -352,6 +503,22 @@ async def bulletin_from_cve(cve_id: str, refresh: bool = Query(False)):
     if not url:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cette CVE n'a pas de page d'avis d'origine.")
     return await _cached_bulletin(db, url, seed=cve, refresh=refresh)
+
+
+@router.post("/cves/{cve_id}/deep-synthesis")
+async def deep_synthesis(cve_id: str, refresh: bool = Query(False)):
+    """Lit les pages sources de la CVE et produit un résumé approfondi + la meilleure solution.
+
+    Opération COÛTEUSE (jusqu'à 6 pages + 1 appel LLM) : déclenchée à la demande, mise en cache
+    14 jours dans la CVE. `refresh=true` force un recalcul.
+    """
+    from app.backend.services.assistant import deep_synthesis as ds
+
+    db = get_database()
+    cve = await db.cves.find_one({"_id": _object_id(cve_id)})
+    if cve is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "CVE introuvable.")
+    return serialize_doc({"v": await ds.synthesize(db, cve, refresh=refresh)})["v"]
 
 
 def _pdf_response(pdf: bytes | None, filename: str) -> Response:
@@ -411,30 +578,83 @@ async def sync_stats():
 
 # ---------- Bulletins GROUPÉS PAR PRODUIT / ÉDITEUR (vue CERT) ----------
 
+def _bornes_periode(start: str | None, end: str | None):
+    """Convertit les bornes reçues (AAAA-MM-JJ) en dates, ou lève une erreur explicite.
+
+    Le filtrage a lieu EN BASE, pas à l'affichage : renvoyer toutes les CVE et les masquer
+    côté navigateur donnerait des compteurs faux — un produit annoncerait quinze
+    vulnérabilités là où la période n'en contient que trois.
+    """
+    def _lire(valeur, nom):
+        if not valeur:
+            return None
+        try:
+            return datetime.strptime(valeur[:10], "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                f"Date « {nom} » invalide : format attendu AAAA-MM-JJ.")
+
+    debut, fin = _lire(start, "start"), _lire(end, "end")
+    if debut and fin and debut > fin:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "La date de début est postérieure à la date de fin.")
+    return debut, fin
+
+
 @router.get("/product-bulletins")
 async def product_bulletins(days: int = Query(45, ge=1, le=365), severity: str | None = Query(None),
                             q: str | None = Query(None), skip: int = Query(0, ge=0),
-                            limit: int = Query(24, ge=1, le=100)):
-    """Liste des bulletins groupés par éditeur (cartes : produit, nb de CVE, sévérité max)."""
+                            limit: int = Query(24, ge=1, le=100),
+                            start: str | None = Query(None, description="Début de période (AAAA-MM-JJ)"),
+                            end: str | None = Query(None, description="Fin de période (AAAA-MM-JJ)")):
+    """Bulletins groupés PAR PRODUIT SURVEILLÉ sur la période demandée.
+
+    `start`/`end` définissent la période ; à défaut, `days` conserve l'ancienne fenêtre
+    glissante, de sorte qu'un appel existant continue de fonctionner à l'identique.
+    """
     db = get_database()
+    debut, fin = _bornes_periode(start, end)
     return await product_bulletin.list_product_bulletins(db, days=days, severity=severity,
-                                                         q=q, skip=skip, limit=limit)
+                                                         q=q, skip=skip, limit=limit,
+                                                         debut=debut, fin=fin)
 
 
 @router.get("/product-bulletins/{vendor_key}")
-async def product_bulletin_detail(vendor_key: str, days: int = Query(45, ge=1, le=365)):
-    """Bulletin complet d'un éditeur : toutes ses CVE récentes regroupées (structure SecurityBulletin)."""
+async def product_bulletin_detail(vendor_key: str, days: int = Query(45, ge=1, le=365),
+                                  start: str | None = Query(None), end: str | None = Query(None)):
+    """Bulletin complet d'un produit surveillé : UNE LIGNE PAR CVE, chacune avec ses données."""
     db = get_database()
-    bulletin = await product_bulletin.build_product_bulletin(db, vendor_key, days=days)
+    debut, fin = _bornes_periode(start, end)
+    bulletin = await product_bulletin.build_product_bulletin(db, vendor_key, days=days,
+                                                             debut=debut, fin=fin)
     if not bulletin:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Aucune vulnérabilité récente pour cet éditeur.")
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "Aucune vulnérabilité pour ce produit sur la période choisie.")
     return serialize_doc(bulletin)
 
 
+@router.get("/product-bulletins/{vendor_key}/details.pdf")
+async def product_bulletin_details_pdf(vendor_key: str, days: int = Query(45, ge=1, le=365),
+                                       start: str | None = Query(None),
+                                       end: str | None = Query(None)):
+    """Export PDF du SEUL détail des vulnérabilités — une ligne par CVE.
+
+    Document distinct du bulletin de synthèse : les deux répondent à des usages différents
+    (transmettre une alerte / travailler ligne à ligne), et un consultant veut souvent l'un
+    sans l'autre.
+    """
+    bulletin = await product_bulletin_detail(vendor_key, days=days, start=start, end=end)
+    if start and end:
+        bulletin["periode_libelle"] = f"période du {start} au {end}"
+    return _pdf_response(await bulletin_pdf.build_details_pdf(bulletin),
+                         bulletin_pdf.details_filename_for(bulletin))
+
+
 @router.get("/product-bulletins/{vendor_key}/bulletin.pdf")
-async def product_bulletin_pdf(vendor_key: str, days: int = Query(45, ge=1, le=365)):
-    """Export PDF RÉEL du bulletin groupé d'un éditeur (plusieurs CVE dans un seul document)."""
-    bulletin = await product_bulletin_detail(vendor_key, days=days)
+async def product_bulletin_pdf(vendor_key: str, days: int = Query(45, ge=1, le=365),
+                               start: str | None = Query(None), end: str | None = Query(None)):
+    """Export PDF RÉEL du bulletin groupé d'un produit (plusieurs CVE dans un seul document)."""
+    bulletin = await product_bulletin_detail(vendor_key, days=days, start=start, end=end)
     return _pdf_response(await bulletin_pdf.build_pdf(bulletin),
                          bulletin_pdf.filename_for(bulletin))
 
@@ -442,6 +662,85 @@ async def product_bulletin_pdf(vendor_key: str, days: int = Query(45, ge=1, le=3
 # ---------- Notifications (nouvelles CVE détectées par la collecte) ----------
 
 _UNREAD_FILTER = {"$or": [{"is_new": True}, {"update_unread": True}]}
+
+
+@router.get("/notifications/email-status")
+async def email_status(user: dict = Depends(require_role("consultant"))):
+    """La veille par courriel peut-elle réellement partir, et vers quelle adresse ?
+
+    Un consultant qui ne reçoit rien n'a aujourd'hui aucun moyen de savoir pourquoi : le
+    diagnostic n'existe que dans les journaux du serveur, qu'il ne lit pas. Il en conclut que
+    l'application est en panne, alors qu'il manque le plus souvent une seule ligne de
+    configuration — et personne ne s'en aperçoit tant que rien ne l'affiche.
+
+    Ce point d'entrée expose l'état RÉEL, sans jamais divulguer de secret : on dit qu'un mot
+    de passe manque, jamais sa valeur.
+    """
+    from app.backend.core.config import settings
+    from app.backend.services import notifications as notif
+
+    # LA MÊME SOURCE QUE L'ENVOI. Cet écran recomposait la liste de son côté : le jour où
+    # l'envoi s'est restreint, il aurait continué d'annoncer « vous recevrez la veille » à
+    # des consultants qui ne reçoivent plus rien. Un diagnostic qui diverge de ce qu'il
+    # diagnostique est pire que pas de diagnostic — on cesse de chercher ailleurs.
+    prevus = await notif._liste_de_diffusion(get_database())
+    adresses = {(u.get("email") or "").lower() for u in prevus if u.get("email")}
+    mienne = (user.get("email") or "").lower()
+
+    # Cause BLOQUANTE, s'il y en a une. L'ordre suit celui des vérifications de l'envoi.
+    if not settings.SMTP_HOST:
+        cause, detail = "non_configure", "Aucun serveur d'envoi (SMTP_HOST) n'est renseigné."
+    elif not settings.EMAIL_NOTIFICATIONS_ENABLED:
+        cause, detail = "desactive", "Les notifications par courriel sont désactivées."
+    elif not notif._serveur_local(settings.SMTP_HOST) and not settings.SMTP_USER:
+        cause, detail = "identifiant_manquant", (
+            f"Le serveur « {settings.SMTP_HOST} » exige une authentification, mais aucun "
+            "identifiant (SMTP_USER) n'est renseigné.")
+    elif not notif._serveur_local(settings.SMTP_HOST) and not settings.SMTP_PASSWORD:
+        cause, detail = "mot_de_passe_manquant", (
+            f"Le serveur « {settings.SMTP_HOST} » exige une authentification, mais le mot de "
+            "passe (SMTP_PASSWORD) n'est pas renseigné. Aucun message ne peut donc être remis.")
+    elif not adresses:
+        cause, detail = "aucun_destinataire", (
+            "Aucun compte consultant ne porte d'adresse de courriel.")
+    else:
+        cause, detail = None, None
+
+    return {
+        "operationnel": cause is None,
+        "cause": cause,
+        "detail": detail,
+        "serveur": settings.SMTP_HOST or None,
+        "expediteur": settings.SMTP_FROM or None,
+        "destinataires": len(adresses),
+        # « Suis-je moi-même destinataire ? » est la question que se pose le consultant.
+        "je_suis_destinataire": bool(mienne and mienne in adresses),
+        "mon_adresse": user.get("email"),
+    }
+
+
+@router.post("/notifications/email-test")
+async def email_test(user: dict = Depends(require_role("consultant"))):
+    """Envoie un message d'essai à SA PROPRE adresse et rapporte ce qui s'est passé.
+
+    Valider une configuration ne devrait pas demander d'attendre la collecte du lendemain.
+    Sans cet essai, un administrateur colle un mot de passe puis attend — et si rien n'arrive,
+    il ignore si la faute revient au mot de passe, au compte ou au réseau.
+
+    L'adresse est celle du COMPTE CONNECTÉ, jamais un paramètre : un point d'entrée qui
+    accepterait une adresse arbitraire deviendrait un relais d'envoi pour un tiers.
+    """
+    from app.backend.services import notifications as notif
+
+    adresse = user.get("email")
+    if not adresse:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Votre compte ne porte pas d'adresse de courriel.")
+    resultat = await notif.essai_de_remise(adresse)
+    await log_action(str(user["_id"]), "consultant", "email_test",
+                     f"essai de remise vers {adresse} : "
+                     f"{'succès' if resultat['envoye'] else 'échec'}")
+    return {**resultat, "adresse": adresse}
 
 
 @router.get("/notifications")
@@ -452,8 +751,24 @@ async def list_notifications(limit: int = Query(40, ge=1, le=100)):
     source_ids = [c["source_id"] for c in news if c.get("source_id")]
     sources = {s["_id"]: s async for s in db.sources.find({"_id": {"$in": source_ids}})}
     items = []
+    from app.backend.services.collection.storage import decrire_changements
+
     for c in news:
         doc = _cve_out(c, sources)
+        est_maj = bool(c.get("update_unread") and not c.get("is_new"))
+        # CE QUI A CHANGÉ, et pas seulement QU'il y a eu un changement.
+        #
+        # « Mise à jour de CVE » n'aide pas un consultant : un score réévalué de 7.1 à 9.8,
+        # un correctif qui vient de paraître et une exploitation confirmée n'appellent pas
+        # la même réaction. Le dernier enregistrement d'historique porte les valeurs
+        # avant/après ; on les restitue telles quelles, sans les interpréter.
+        details = []
+        if est_maj:
+            historique = c.get("history") or []
+            if historique:
+                details = decrire_changements((historique[-1] or {}).get("changes") or {})
+            if not details:
+                details = list(c.get("change_summary") or [])
         items.append({
             "id": doc["id"],
             "cve_id": doc.get("cve_id"),
@@ -461,7 +776,11 @@ async def list_notifications(limit: int = Query(40, ge=1, le=100)):
             "severity": doc.get("severity"),
             "cvss_score": doc.get("cvss_score"),
             "source": doc.get("source"),
-            "type": "update" if (c.get("update_unread") and not c.get("is_new")) else "new",
+            "type": "update" if est_maj else "new",
+            # Détail lisible des modifications (vide pour une nouvelle CVE).
+            "changes": details,
+            # Date du changement lui-même, distincte de la publication et de la collecte.
+            "updated_at": doc.get("last_important_update") or doc.get("updated_at"),
             # Vraie date de publication de la CVE (source officielle).
             "published_at": doc.get("published_at"),
             # Date à laquelle notre agent l'a détectée (technique).
@@ -487,6 +806,66 @@ async def mark_notifications_read(user: dict = Depends(require_role("consultant"
 
 
 # ---------- Planification de la collecte (config globale, gérée par le consultant) ----------
+
+@router.get("/collection-status")
+async def collection_status():
+    """État de la collecte du jour : a-t-elle eu lieu, avec quel résultat, peut-on relancer ?
+
+    Le consultant a besoin de savoir si la veille du jour est faite AVANT de décider de la
+    relancer. Sans cette information, il relance à l'aveugle — ou pire, il croit la veille
+    faite alors que la machine était hors ligne à l'heure prévue.
+    """
+    db = get_database()
+    debut, _fin = _day_bounds()
+    dernier = await db.collection_runs.find_one({"started_at": {"$gte": debut}},
+                                                sort=[("started_at", -1)])
+    planning = await get_collection_schedule()
+    en_cours = bool(dernier and not dernier.get("finished_at"))
+    return {
+        "scheduled_at": f"{planning.get('hour', 0):02d}:{planning.get('minute', 0):02d}",
+        "ran_today": bool(dernier),
+        "running": en_cours,
+        "status": (dernier or {}).get("daily_status") or (dernier or {}).get("status"),
+        "started_at": (dernier or {}).get("started_at"),
+        "finished_at": (dernier or {}).get("finished_at"),
+        "new_saved": (dernier or {}).get("new_saved"),
+        "updated": (dernier or {}).get("updated"),
+        "sources_ok": (dernier or {}).get("sources_ok"),
+        "sources_total": (dernier or {}).get("sources_total"),
+        # CE QUI A PARU AUJOURD'HUI, tous produits confondus — à lire avec `new_saved`.
+        #
+        # « 0 nouvelle vulnérabilité » ne dit pas si la journée a été calme ou si la collecte
+        # a échoué. Avec « 36 parues aujourd'hui, 0 concernant vos produits », le consultant
+        # tranche seul, et n'a plus de raison de croire l'application en panne.
+        "published_today": (dernier or {}).get("published_today"),
+        "cve_detected": (dernier or {}).get("cve_detected"),
+    }
+
+
+@router.post("/collection/run")
+async def run_collection_now(background: BackgroundTasks,
+                             user: dict = Depends(require_role("consultant"))):
+    """RELANCE la collecte du jour, à la demande du consultant.
+
+    Utile quand l'exécution planifiée a échoué — machine éteinte à l'heure dite, réseau
+    indisponible, portail momentanément injoignable : le consultant n'a plus à attendre le
+    lendemain pour disposer de sa veille.
+
+    Le traitement part en ARRIÈRE-PLAN : il dure plusieurs minutes et ne doit pas maintenir
+    la requête ouverte. Un lancement pendant qu'une collecte tourne déjà est REFUSÉ — deux
+    exécutions simultanées se disputeraient les mêmes sources et fausseraient les compteurs.
+    """
+    db = get_database()
+    etat = await collection_status()
+    if etat["running"]:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Une collecte est déjà en cours. Patientez quelques minutes.")
+
+    background.add_task(pipeline.run_collection_safe, db, "manual")
+    await log_action(str(user["_id"]), "consultant", "collection.run_now", {})
+    return {"status": "started",
+            "message": "Collecte lancée. Les résultats apparaîtront dans quelques minutes."}
+
 
 @router.get("/collection-schedule")
 async def get_collection_schedule():

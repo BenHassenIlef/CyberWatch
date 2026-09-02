@@ -6,7 +6,10 @@ RÈGLE DE NOTIFICATION : une notification n'est créée que si la VRAIE date de 
 la CVE (published_at) est dans la fenêtre configurée (CVE_NOTIFY_WINDOW_DAYS). Une ancienne
 CVE simplement redécouverte aujourd'hui est enregistrée mais NE génère PAS de notification.
 On ne se base JAMAIS sur collected_at / detected_at pour cette décision."""
+from datetime import datetime, timedelta
+
 from app.backend.core.config import settings
+from app.backend.services.collection import provenance
 from app.backend.services.collection.schema import (
     CANONICAL_KEYS, IMPORTANT_FIELDS, LIST_FIELDS, completeness, content_hash, is_recent)
 from app.backend.utils import utcnow
@@ -15,6 +18,58 @@ from app.backend.utils import utcnow
 _COMPARABLE = tuple(k for k in CANONICAL_KEYS if k not in ("cve_id", "detail_url"))
 # Champs texte « riches » : on ne remplace JAMAIS une valeur détaillée par une plus courte.
 _RICH_TEXT = ("description", "solution", "impact")
+
+# --------------------------------------------------------------------------------------
+# DATE DE PUBLICATION — règle de monotonie
+#
+# La date de publication d'une CVE est un FAIT figé : elle ne peut pas avancer dans le temps.
+# Or un avis (ANCS, DGSSI, SecAlerts…) republié aujourd'hui et citant une CVE de mai fournit
+# la date de L'AVIS, pas celle de la CVE. Sans garde-fou, chaque nouvelle collecte repoussait
+# `published_at` vers aujourd'hui — une CVE de 2008 s'est ainsi retrouvée datée de 2026.
+#
+# Règle : on n'accepte une nouvelle valeur que si elle est ANTÉRIEURE et crédible (correction
+# légitime, ex. NVD révèle la vraie date). Toute valeur postérieure est ignorée.
+# --------------------------------------------------------------------------------------
+
+_CVE_ERA_START = datetime(1999, 1, 1)   # le programme CVE débute en 1999
+
+
+def _naive(d):
+    """Ramène en UTC naïf : les dates stockées le sont, `utcnow()` est « aware »."""
+    return d.replace(tzinfo=None) if isinstance(d, datetime) and d.tzinfo else d
+
+
+def accept_publication_date(new, old, collected_at=None, verifiee: bool = False) -> bool:
+    """Faut-il remplacer la date de publication connue par la nouvelle ?
+
+    Trois garde-fous, du plus evident au plus subtil :
+
+    1. DATE ABERRANTE — anterieure au programme CVE (1999) ou dans le futur : refusee.
+
+    2. POSTERIEURE A LA COLLECTE — on ne peut pas avoir decouvert une CVE AVANT qu'elle soit
+       publiee. Une date plus recente que `collected_at` trahit donc une date de PAGE ou
+       d'AVIS, pas celle de la vulnerabilite. Exception : une source d'AUTORITE peut
+       legitimement publier apres coup une CVE d'abord reservee, d'ou le drapeau `verifiee`.
+
+    3. MONOTONIE — une date de publication ne recule jamais vers le futur. Seule une
+       correction vers le PASSE est acceptee.
+    """
+    new = _naive(new)
+    if not isinstance(new, datetime):
+        return False
+    if new < _CVE_ERA_START or new > _naive(utcnow()) + timedelta(days=2):
+        return False                      # date aberrante (trop ancienne ou dans le futur)
+
+    # Impossible d'avoir collecte une CVE avant sa publication — sauf autorite explicite.
+    coll = _naive(collected_at)
+    if not verifiee and isinstance(coll, datetime) and new > coll + timedelta(days=1):
+        return False
+
+    old = _naive(old)
+    if not isinstance(old, datetime):
+        return True                       # rien de connu : on prend
+    return new < old                      # UNIQUEMENT une correction vers le passé
+
 
 _CHANGE_LABELS = {
     "cvss_score": "Score CVSS", "cvss_vector": "Vecteur CVSS", "severity": "Sévérité", "cwe": "CWE",
@@ -48,6 +103,37 @@ def _change_summary(changes: dict) -> list[str]:
     return out
 
 
+def _valeur_lisible(v) -> str:
+    """Valeur affichable dans un libellé de changement, bornée en longueur."""
+    if v in (None, "", []):
+        return "non renseigné"
+    if isinstance(v, list):
+        return f"{len(v)} élément(s)"
+    return str(v)[:60]
+
+
+def decrire_changements(changes: dict) -> list[str]:
+    """Libellés DÉTAILLÉS d'un ensemble de modifications, avec les valeurs avant/après.
+
+    « Mise à jour de CVE » ne dit rien à un consultant : il doit savoir si c'est le score qui
+    a été réévalué, un correctif qui vient de paraître, ou l'exploitation qui est confirmée —
+    trois situations qui n'appellent pas la même réaction. Les valeurs sont donc restituées
+    telles qu'elles ont changé (« Score CVSS : 7.1 → 9.8 »), et jamais interprétées.
+    """
+    out = []
+    for champ, v in (changes or {}).items():
+        label = _CHANGE_LABELS.get(champ, champ)
+        if isinstance(v, dict) and "ajout" in v:
+            out.append(f"{label} : {v['ajout']} ajout(s)")
+        elif isinstance(v, dict) and ("old" in v or "new" in v):
+            avant, apres = _valeur_lisible(v.get("old")), _valeur_lisible(v.get("new"))
+            out.append(f"{label} : {avant} → {apres}" if v.get("old") not in (None, "", [])
+                       else f"{label} : {apres} (ajouté)")
+        else:
+            out.append(f"{label} mis(e) à jour")
+    return out
+
+
 def _diff(existing: dict, rec: dict) -> tuple[dict, dict, bool]:
     """Calcule les champs à mettre à jour et les changements importants.
 
@@ -71,6 +157,14 @@ def _diff(existing: dict, rec: dict) -> tuple[dict, dict, bool]:
             if newv in (None, "", []):
                 continue
             if not oldv:
+                # Le champ est VIDE : c'est justement le cas de toutes les CVE issues d'un
+                # avis depuis que le collecteur ne renseigne plus `published_at`. Sans ce
+                # controle, la premiere date venue — souvent celle de la page — s'installerait.
+                if key == "published_at" and not accept_publication_date(
+                        newv, None, existing.get("collected_at"),
+                        verifiee=((rec.get("provenance") or {}).get("cve_published_at")
+                                  or {}).get("confidence") == "verified"):
+                    continue
                 set_fields[key] = newv
                 if key in IMPORTANT_FIELDS:
                     changes[key] = {"old": None, "new": newv}
@@ -78,6 +172,12 @@ def _diff(existing: dict, rec: dict) -> tuple[dict, dict, bool]:
             elif newv != oldv:
                 # Ne JAMAIS remplacer un texte riche par un plus court/pauvre (garder le meilleur).
                 if key in _RICH_TEXT and len(str(newv)) < len(str(oldv)):
+                    continue
+                # La date de publication ne recule jamais vers le futur (voir plus haut).
+                if key == "published_at" and not accept_publication_date(
+                        newv, oldv, existing.get("collected_at"),
+                        verifiee=((rec.get("provenance") or {}).get("cve_published_at")
+                                  or {}).get("confidence") == "verified"):
                     continue
                 set_fields[key] = newv
                 if key in IMPORTANT_FIELDS:
@@ -136,6 +236,29 @@ async def save_records(db, records: list[dict]) -> dict:
             set_fields["monitored_product"] = rec["monitored_product"]
         if rec.get("domain") and not existing.get("domain"):
             set_fields["domain"] = rec["domain"]
+
+        # Si la publication a été CORRIGÉE vers une date antérieure, la borne basse observée
+        # (`first_published`) doit suivre : elle sert de référence de réparation.
+        if "published_at" in set_fields:
+            fp = existing.get("first_published")
+            if not isinstance(fp, datetime) or set_fields["published_at"] < fp:
+                set_fields["first_published"] = set_fields["published_at"]
+
+        # PROVENANCE — fusionnée champ par champ : une valeur vérifiée ne peut jamais être
+        # remplacée par une valeur d'avis, quel que soit l'ordre des collectes.
+        prov_new = rec.get("provenance") or {}
+        if prov_new:
+            prov_old = existing.get("provenance") or {}
+            fusion = dict(prov_old)
+            for champ, entree in prov_new.items():
+                if provenance.should_replace(champ, prov_old.get(champ), entree):
+                    fusion[champ] = entree
+                    if entree.get("value") not in (None, "", []):
+                        set_fields[champ] = entree["value"]
+            if fusion != prov_old:
+                set_fields["provenance"] = fusion
+                set_fields["validation_status"] = provenance.validation_status(
+                    {**existing, **set_fields, "provenance": fusion})
 
         # TRADUCTION — les champs français produits par l'agent voyagent avec l'enregistrement
         # mais ne font pas partie des champs canoniques comparés par `_diff` : on les persiste

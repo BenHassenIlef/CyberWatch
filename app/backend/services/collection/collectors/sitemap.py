@@ -6,7 +6,7 @@ qui exposent un sitemap destiné aux moteurs (déclaré dans robots.txt) — ex.
 <lastmod> fournit une date ABSOLUE (ISO 8601), ce qui règle aussi le problème des temps relatifs
 (« First published 2h ago »). Extensible à tout sitemap listant des pages de CVE."""
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.backend.services.collection import net
 from app.backend.services.collection.collectors.base import register, target_url
@@ -30,6 +30,20 @@ def _entries(body: str) -> list[tuple[str, str | None]]:
         lm = _LASTMOD_RE.search(block)
         out.append((loc.group(1).strip(), lm.group(1).strip() if lm else None))
     return out
+
+
+def _naif(valeur):
+    """Date SANS fuseau — convention de toute la chaine de collecte.
+
+    Un sitemap melange les formes : certaines entrees <lastmod> portent un decalage horaire
+    (« 2026-08-19T10:00:00+02:00 »), d autres non (« 2026-08-19 »). Les comparer levait
+    « can t compare offset-naive and offset-aware datetimes », et l exception faisait perdre
+    la SOURCE ENTIERE — la plus prolifique du parc. Normaliser des l analyse supprime le
+    probleme a la racine, pour ce sitemap comme pour tous les autres.
+    """
+    if valeur is None or valeur.tzinfo is None:
+        return valeur
+    return valeur.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 @register("sitemap")
@@ -57,7 +71,7 @@ async def collect(source: dict, since) -> list[dict]:
         if not m:
             continue
         cid = m.group(0).upper()
-        dt = parse_dt(lm) if lm else None
+        dt = _naif(parse_dt(lm)) if lm else None
         prev = seen.get(cid)
         if prev is None or (dt and (prev[1] is None or dt > prev[1])):
             seen[cid] = (loc, dt)

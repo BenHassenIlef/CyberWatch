@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.backend.core import config
 from app.backend.core.config import settings
 from app.backend.db.mongodb import create_indexes, get_database
 from app.backend.routers import admin, assistant, auth, chat, consultant, monitoring
@@ -26,6 +27,10 @@ def _configure_logging() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _configure_logging()
+    # Quel fichier de configuration a RÉELLEMENT été lu, et lesquels sont ignorés. Une valeur
+    # saisie dans un fichier que personne ne charge est indétectable autrement : on constate
+    # seulement que le réglage « ne marche pas », sans jamais soupçonner le bon coupable.
+    config.tracer_chargement()
     await create_indexes()
     # Hygiène : au démarrage, clôturer toute collecte orpheline restée « running » (process tué).
     try:

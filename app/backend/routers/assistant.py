@@ -18,7 +18,8 @@ from pydantic import BaseModel, Field
 from app.backend.core.config import settings
 from app.backend.db.mongodb import get_database
 from app.backend.dependencies.auth import require_role
-from app.backend.services.assistant import llm, rag
+from app.backend.services.assistant import conversation, llm
+from app.backend.services.assistant import harness
 from app.backend.utils import serialize_doc, utcnow
 
 # Dépendance de rôle au niveau du routeur -> l'espace ADMIN n'y a PAS accès.
@@ -73,36 +74,84 @@ async def health():
     return await llm.ping()
 
 
+@router.get("/harness")
+async def harness_capabilities():
+    """Capacités du harness : agents déclarés et outils que CHACUN a le droit d'appeler.
+
+    Lecture seule et sans secret : ni clé, ni prompt système, ni fonction exécutable. Sert à
+    vérifier les permissions depuis l'extérieur — un tableau de permissions qu'on ne peut pas
+    consulter est un tableau que personne ne relit.
+    """
+    return {
+        "agents": [
+            {"nom": a.nom, "role": a.role,
+             "outils": harness.agents.outils_autorises(a.nom)}
+            for a in harness.agents.AGENTS.values()
+        ],
+        "outils": harness.outils.catalogue(),
+        "limites": {"reprises_max": harness.MAX_REPRISES,
+                    "budget_outils_s": harness.BUDGET_OUTILS_S,
+                    "question_max_caracteres": harness.securite.MAX_QUESTION},
+    }
+
+
 @router.post("/ask")
 async def ask(payload: AskIn, user: dict = Depends(require_role("consultant"))):
     db = get_database()
     question = payload.question.strip()
 
-    # RAG : récupération en base + synthèse ancrée (mode = résumé structuré éventuel).
-    result = await rag.answer_question(db, question, mode=payload.mode)
-
-    # Conversation (créée si absente).
+    # Conversation (créée si absente). Résolue AVANT la réponse : les échanges précédents
+    # servent à comprendre une question de suivi (« et pour Microsoft ? »), qui sans eux
+    # arrivait au moteur dépouillée de son sujet.
     now = utcnow()
+    historique: list[dict] = []
     if payload.conversation_id:
         conv = await db.assistant_conversations.find_one(
             {"_id": _oid(payload.conversation_id), "consultant_id": user["_id"]})
         if conv is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Conversation introuvable")
         conv_id = conv["_id"]
+        historique = await db.assistant_messages.find(
+            {"conversation_id": conv_id},
+            {"question": 1, "answer": 1},
+        ).sort("created_at", -1).to_list(conversation.MAX_ECHANGES)
+        historique.reverse()          # du plus ancien au plus récent
         await db.assistant_conversations.update_one({"_id": conv_id}, {"$set": {"updated_at": now}})
     else:
         conv_id = (await db.assistant_conversations.insert_one({
             "consultant_id": user["_id"], "title": question[:70],
             "created_at": now, "updated_at": now})).inserted_id
 
+    # HARNESS — contrôleur d'exécution placé AUTOUR de l'assistant existant.
+    #
+    # Le contrat de cette route ne change pas : mêmes paramètres, mêmes champs en retour.
+    # Ce qui change est le TRAJET interne — planification de l'agent, permissions d'outils,
+    # délais, reprises bornées, validation, assainissement de la sortie — avant que
+    # `rag.answer_question` ne rédige, comme il le faisait déjà, la réponse finale.
+    try:
+        result = await harness.repondre(db, question, historique=historique, mode=payload.mode)
+    except harness.HarnessIndisponible as exc:
+        # Entrée refusée (vide, démesurée) : on le dit franchement plutôt que de renvoyer une
+        # erreur technique que le consultant ne saurait pas corriger.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
     await db.assistant_messages.insert_one({
         "conversation_id": conv_id, "consultant_id": user["_id"],
         "question": question, "answer": result["answer"],
+        # Question réellement traitée après réécriture d'un suivi — conservée pour que
+        # l'historique reste relisible : sans elle, « et pour Microsoft ? » suivi d'une
+        # réponse sur Microsoft paraîtrait sortir de nulle part.
+        "rewritten_question": result.get("rewritten_question"),
         "sources": result.get("sources", []), "confidence": result.get("confidence"),
         "results": result.get("results", []), "count": result.get("count", 0),
         "sections": result.get("sections", []), "style": result.get("style"),
         "generated_by": result.get("generated_by"),
         "scope": result.get("scope", "internal"),
+        # TRACE D'ORCHESTRATION : agent retenu, outils appelés, statuts, reprises, durée.
+        # Ne porte ni question, ni réponse, ni secret — de quoi diagnostiquer une réponse
+        # décevante des semaines plus tard, sans conserver de données sensibles.
+        "harness": result.get("harness"),
+        "tools_used": result.get("tools_used", []),
         "created_at": now,
     })
     return {**result, "conversation_id": str(conv_id)}

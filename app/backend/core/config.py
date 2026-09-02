@@ -1,7 +1,29 @@
 import base64
 import hashlib
+import logging
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("cyberwatch.config")
+
+# RACINE DU PROJET, déduite de l'emplacement de CE fichier :
+#   app/backend/core/config.py  ->  parents[3]
+#
+# Le chemin du fichier de configuration était écrit « .env », donc RELATIF au répertoire
+# COURANT. Lancée depuis la racine, l'application chargeait tout ; lancée depuis n'importe
+# quel autre répertoire — un service Windows, une tâche planifiée, un `cd` malheureux — elle
+# ne chargeait RIEN et démarrait quand même : SMTP_HOST vide, donc courriels muets, et
+# LLM_API_KEY vide, donc assistant dégradé. Le tout sans le moindre message.
+#
+# Ancré ici sur un chemin absolu, le comportement ne dépend plus de la façon dont on démarre.
+RACINE_PROJET = Path(__file__).resolve().parents[3]
+FICHIER_ENV = RACINE_PROJET / ".env"
+
+# Copie locale historique, JAMAIS chargée (elle ne l'a jamais été, malgré les apparences).
+# On la signale plutôt que de la supprimer : quelqu'un y a saisi des valeurs, et découvrir
+# qu'elles n'ont aucun effet vaut mieux que de les voir disparaître.
+_ENV_IGNORE = RACINE_PROJET / "app" / "backend" / ".env"
 
 # Alias de fournisseurs LLM saisis dans .env -> nom canonique interne.
 # ATTENTION : « Groq » (groq.com, clés « gsk_… ») et « Grok » (xAI, clés « xai-… ») sont DEUX
@@ -16,8 +38,27 @@ LLM_DEFAULT_MODELS = {"groq": "openai/gpt-oss-120b", "xai": "grok-4",
                       "anthropic": "claude-sonnet-4-5", "openai": "gpt-4o-mini"}
 
 
+def tracer_chargement() -> None:
+    """Annonce QUEL fichier de configuration a été lu, et lesquels ne le sont pas.
+
+    Appelé au démarrage. Une valeur saisie dans un fichier que personne ne charge est
+    indétectable autrement : on constate seulement que le réglage « ne marche pas ».
+    Aucune valeur n'est journalisée — seulement des chemins et des présences.
+    """
+    if FICHIER_ENV.exists():
+        logger.info("Configuration lue depuis %s", FICHIER_ENV)
+    else:
+        logger.warning(
+            "Aucun fichier %s : l'application démarre sur ses valeurs par défaut. "
+            "Les courriels et l'assistant IA resteront inactifs.", FICHIER_ENV)
+    if _ENV_IGNORE.exists():
+        logger.warning(
+            "Le fichier %s existe mais N'EST PAS LU : seule la configuration de la racine "
+            "est chargée. Toute valeur saisie ici reste sans effet.", _ENV_IGNORE)
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=FICHIER_ENV, extra="ignore")
 
     MONGO_URI: str = "mongodb://localhost:27017"
     DB_NAME: str = "cyberwatch"
@@ -145,6 +186,75 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "cyberwatch@localhost"
+    # CHIFFREMENT DE LA LIAISON. Le code n'appelait `starttls()` que si un identifiant était
+    # renseigné : un relais exigeant TLS sans authentification recevait donc le message EN
+    # CLAIR — et un identifiant Gmail traversait le réseau sans protection si la configuration
+    # était incomplète. Le chiffrement ne doit dépendre que du serveur, jamais de la présence
+    # d'un mot de passe.
+    #
+    #   587 -> STARTTLS (la liaison démarre en clair puis bascule) — cas de Gmail ;
+    #   465 -> TLS implicite (la liaison est chiffrée dès l'ouverture).
+    SMTP_USE_TLS: bool = True
+    # Fenetre d activite des consultants destinataires, en jours. 0 = tout consultant s etant
+    # connecte au moins une fois. Au-dela, seuls ceux qui se sont connectes recemment sont
+    # prevenus : un compte de demonstration cesse ainsi de recevoir la veille quotidienne.
+    NOTIFY_ACTIVE_CONSULTANT_DAYS: int = 0
+
+    # Adresses AJOUTEES a chaque envoi, en plus des consultants (separees par des virgules).
+    # Destinees a une boite de supervision qui doit tout recevoir, y compris lorsqu aucun
+    # consultant ne remplit le critere d activite. Ces adresses ne dependent d aucun compte.
+    NOTIFY_EXTRA_RECIPIENTS: str = ""
+
+    # LISTE EXCLUSIVE de destinataires (separees par des virgules). Renseignee, elle REMPLACE
+    # entierement la selection automatique : seules ces adresses recoivent la veille, et
+    # aucun compte consultant n y est ajoute.
+    #
+    # NOTIFY_EXTRA_RECIPIENTS ajoute ; celle-ci restreint. La distinction compte : une
+    # entreprise qui dirige la veille vers une boite de service unique ne veut pas qu une
+    # connexion d un consultant, ou la creation d un compte de demonstration, remette
+    # discretement des adresses dans la liste. Laissee vide, le comportement est inchange.
+    NOTIFY_ONLY_RECIPIENTS: str = ""
+
+    @staticmethod
+    def _adresses(valeur: str) -> list[str]:
+        """Adresses d une liste separee par des virgules, sans doublon (casse ignoree)."""
+        vus: list[str] = []
+        for adresse in (valeur or "").split(","):
+            adresse = adresse.strip()
+            if adresse and adresse.lower() not in [v.lower() for v in vus]:
+                vus.append(adresse)
+        return vus
+
+    @property
+    def extra_recipients(self) -> list[str]:
+        return self._adresses(self.NOTIFY_EXTRA_RECIPIENTS)
+
+    @property
+    def only_recipients(self) -> list[str]:
+        return self._adresses(self.NOTIFY_ONLY_RECIPIENTS)
+
+    # VEILLE DU JOUR : la collecte quotidienne ne retient que les vulnérabilités PUBLIÉES
+    # aujourd'hui.
+    #
+    # Sans cette borne, la fenêtre interrogée couvrait jusqu'à 120 jours et le plafond par
+    # source tronquait le résultat depuis le PLUS ANCIEN : on rapatriait des centaines de
+    # CVE de 2018 à 2022 sans jamais atteindre celles du jour. Un rattrapage sur plusieurs
+    # jours reste possible en élargissant `DAILY_COLLECTION_WINDOW_DAYS`.
+    DAILY_COLLECTION_TODAY_ONLY: bool = True
+    # Nombre de jours couverts quand la borne ci-dessus est active. 1 = aujourd'hui seul.
+    # Au-delà, on rattrape les publications tardives des jours précédents.
+    DAILY_COLLECTION_WINDOW_DAYS: int = 1
+
+    # --- Reddit (discussions communautaires) -------------------------------------------
+    # Accès SERVEUR À SERVEUR à l'API officielle. L'accès anonyme est fermé (HTTP 403) et
+    # ne doit pas être contourné : sans ces identifiants, la source se déclare simplement
+    # NON CONFIGURÉE. Aucune valeur par défaut ne doit être écrite ici.
+    #   1. https://www.reddit.com/prefs/apps → « create app » → type « script »
+    #   2. reporter l'identifiant et le secret dans le fichier .env
+    REDDIT_CLIENT_ID: str = ""
+    REDDIT_CLIENT_SECRET: str = ""
+    # Reddit EXIGE un agent utilisateur descriptif et unique ; un agent générique est rejeté.
+    REDDIT_USER_AGENT: str = "CyberWatchAI/1.0 (veille de vulnerabilites)"
 
     @property
     def email_enabled(self) -> bool:

@@ -35,7 +35,16 @@ OFFICIAL_DOMAINS: set[str] = {
 }
 
 # Suffixes de domaines gouvernementaux reconnus comme officiels (CERT/autorités nationales).
-GOV_TLD_SUFFIXES: tuple[str, ...] = (".gov", ".gouv.fr", ".gov.uk", ".gc.ca", ".govt.nz", ".gov.ma")
+# Suffixes reserves aux administrations : leur enregistrement est soumis a une eligibilite
+# etatique, ce qui en fait une garantie d'authenticite en soi (on ne depose pas « .gov.sg »
+# ni « .gouv.fr » librement). Sert aussi a NE PAS accuser de contrefacon deux agences
+# nationales aux acronymes voisins - CSA (Singapour) et CISA (Etats-Unis), par exemple.
+GOV_TLD_SUFFIXES: tuple[str, ...] = (
+    ".gov", ".gouv.fr", ".gov.uk", ".gc.ca", ".govt.nz", ".gov.ma", ".gov.sg",
+    ".gov.au", ".gov.in", ".gov.br", ".gov.za", ".gov.it", ".gob.es", ".gov.pl",
+    ".gov.tn", ".go.jp", ".go.kr", ".gov.tr", ".gov.pt", ".govt.nz", ".gv.at",
+    ".admin.ch", ".bund.de", ".europa.eu",
+)
 
 
 def _host_matches(host: str, domain: str) -> bool:

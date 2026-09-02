@@ -197,7 +197,8 @@ def _boundary(alias: str) -> re.Pattern:
 class _Product:
     """Produit surveillé COMPILÉ (regex prêtes). `broad` sert au texte STRUCTURÉ, `strict` à la
     DESCRIPTION (plus spécifique), `cpes` au préfixe CPE. `enabled` filtre l'activation."""
-    __slots__ = ("name", "vendor", "domain", "broad", "strict", "cpes", "enabled")
+    __slots__ = ("name", "vendor", "domain", "broad", "strict", "cpes", "enabled",
+                 "specifiques", "editeur_seul")
 
     def __init__(self, name, vendor, domain, broad, strict, cpes=None, enabled=True):
         self.name = name
@@ -207,6 +208,23 @@ class _Product:
         self.strict = [_boundary(a) for a in (strict if strict is not None else broad) if a]
         self.cpes = [c.lower() for c in (cpes or []) if c]
         self.enabled = enabled
+
+        # ALIAS SPÉCIFIQUES vs ALIAS RÉDUIT À L'ÉDITEUR.
+        #
+        # Un produit créé depuis l'interface reçoit l'éditeur nu parmi ses alias. « Windows
+        # Server 2022 » captait alors TOUTE vulnérabilité Microsoft — Excel, Xbox — et le
+        # consultant recevait des alertes sans rapport avec le produit qu'il surveille.
+        # L'alias éditeur reste utile pour SITUER une CVE, mais il ne suffit jamais à
+        # l'attribuer : il faut au moins un alias qui désigne le PRODUIT.
+        marque = (vendor or "").strip().lower()
+        # Quand le produit PORTE le nom de son éditeur (« Docker » édité par « Docker »),
+        # l'alias est à la fois la marque et le produit : le déclasser reviendrait à ne plus
+        # jamais reconnaître ce produit. Une vulnérabilité Docker se retrouvait ainsi
+        # attribuée à « Microsoft Windows » et pas à Docker.
+        homonyme = marque and (name or "").strip().lower() == marque
+        vendeur_seul = (lambda a: not homonyme and a.strip().lower() == marque)
+        self.specifiques = [_boundary(a) for a in broad if a and not vendeur_seul(a)]
+        self.editeur_seul = [_boundary(a) for a in broad if a and vendeur_seul(a)]
 
 
 def _build_static() -> list[_Product]:
@@ -272,7 +290,17 @@ async def refresh_catalog(db) -> int:
               if (d.get("domain") or "") not in disabled_domains and d.get("name")]
     if active:
         _active, _from_db = active, True
+    elif await db.monitored_products.count_documents({}) > 0:
+        # LA BASE FAIT AUTORITÉ DÈS QU'ELLE CONTIENT DES PRODUITS.
+        #
+        # Sans ce cas, désactiver le dernier produit surveillé faisait retomber la collecte
+        # sur le catalogue codé en dur : le produit que l'administrateur venait d'écarter
+        # revenait aussitôt, et tout le catalogue par défaut avec lui. Un périmètre vide est
+        # un choix légitime — il doit être respecté.
+        _active, _from_db = [], True
+        logger.info("Catalogue de surveillance : aucun produit actif (choix de l'administrateur).")
     else:
+        # Base réellement VIERGE (première installation) : le catalogue par défaut sert d'amorce.
         _active, _from_db = _build_static(), False
     _rebuild_derived()
     logger.info("Catalogue de surveillance : %d produit(s) actif(s) (source=%s).",
@@ -346,18 +374,53 @@ async def seed_catalog(db) -> dict:
 # ---------------------------------------------------------------------------------------------
 # CLASSIFICATION
 # ---------------------------------------------------------------------------------------------
+# Qualificatif entre parenthèses dans un nom de produit : plateforme de déploiement, édition,
+# variante. Ce n'est PAS l'identité du produit.
+_QUALIFICATIF_RE = re.compile(r"\([^)]*\)")
+
+
+def _sans_qualificatif(nom: str) -> str:
+    """Tête d'un nom de produit : ce qui précède tout qualificatif entre parenthèses.
+
+    « Endpoint Privilege Management (Windows deployment) » désigne un produit BeyondTrust
+    DÉPLOYÉ sur Windows — pas un produit Microsoft. En cherchant les alias dans la chaîne
+    entière, le jeton « windows » du qualificatif attribuait la vulnérabilité à « Microsoft
+    Windows », et l'éditeur réel disparaissait du périmètre.
+
+    La convention est générale : un nom de produit commence par sa marque, et la parenthèse
+    précise un contexte. « Docker Desktop », « Microsoft Edge (Chromium-based) »,
+    « Windows 10 Version 1607 » gardent donc leur identité, tandis que le contexte de
+    déploiement cesse de désigner un produit.
+    """
+    tete = _QUALIFICATIF_RE.sub(" ", nom or "").strip()
+    return tete or (nom or "")
+
+
 def _structured_haystack(rec: dict) -> str:
     parts: list[str] = []
-    for key in ("vendor", "product"):
-        v = rec.get(key)
+    # L'ÉDITEUR est repris tel quel : il n'a pas de qualificatif de plateforme.
+    if rec.get("vendor"):
+        parts.append(str(rec["vendor"]))
+    if rec.get("product"):
+        parts.append(_sans_qualificatif(str(rec["product"])))
+    for v in (rec.get("affected_products") or []):
         if v:
-            parts.append(str(v))
-    for key in ("affected_products", "affected_systems"):
-        for v in (rec.get(key) or []):
-            if v:
-                parts.append(str(v))
+            parts.append(_sans_qualificatif(str(v)))
     if rec.get("vendor") and rec.get("product"):
-        parts.append(f"{rec['vendor']} {rec['product']}")
+        parts.append(f"{rec['vendor']} {_sans_qualificatif(str(rec['product']))}")
+
+    # « Systèmes affectés » énumère des PLATEFORMES D'EXÉCUTION, pas des produits vulnérables :
+    # « Docker Desktop sur Windows versions antérieures à 4.86.0 ». S'en servir pour attribuer
+    # un produit revenait à ranger une faille Docker sous « Microsoft Windows » — le système
+    # d'exploitation n'est pas l'éditeur.
+    #
+    # Ce champ ne sert donc qu'en DERNIER RECOURS : quand la CVE n'identifie son produit ni par
+    # son éditeur, ni par sa liste de produits affectés. C'est le cas des avis d'autorité qui
+    # ne renseignent que cette rubrique, et où elle reste le seul indice disponible.
+    if not parts:
+        for v in (rec.get("affected_systems") or []):
+            if v:
+                parts.append(_sans_qualificatif(str(v)))
     return " ; ".join(parts).lower()
 
 
@@ -385,6 +448,59 @@ def _dedupe(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
             seen.add((name, dom))
             out.append((name, dom))
     return out
+
+
+# Niveaux de confiance d'un appariement CVE <-> produit surveillé, du plus sûr au plus faible.
+CONFIRMED = "confirmed"              # identifiant CPE : correspondance structurée, sans ambiguïté
+HIGH_CONFIDENCE = "high_confidence"  # alias PRODUIT trouvé dans les champs structurés
+POSSIBLE = "possible"                # alias PRODUIT trouvé seulement dans le texte libre
+REJECTED = "rejected"                # seul l'éditeur correspond : insuffisant pour attribuer
+
+_ORDRE_CONFIANCE = {CONFIRMED: 0, HIGH_CONFIDENCE: 1, POSSIBLE: 2, REJECTED: 3}
+
+
+def classify_detailed(rec: dict) -> list[dict]:
+    """Appariements du record, chacun avec son NIVEAU DE CONFIANCE et sa PREUVE.
+
+    Renvoie [{product, domain, confidence, evidence}], les plus sûrs d'abord. Les
+    appariements `rejected` — ceux qui ne reposent que sur le nom de l'éditeur — figurent
+    dans la liste pour rester traçables, mais l'appelant ne doit pas les retenir.
+    """
+    cpes = _cpe_list(rec)
+    struct = _structured_haystack(rec)
+    texte = ((rec.get("title") or "") + " " + (rec.get("description") or "")).lower()
+    trouves: dict[str, dict] = {}
+
+    def _noter(p, confiance, preuve):
+        ancien = trouves.get(p.name)
+        if ancien and _ORDRE_CONFIANCE[ancien["confidence"]] <= _ORDRE_CONFIANCE[confiance]:
+            return
+        trouves[p.name] = {"product": p.name, "domain": p.domain,
+                           "confidence": confiance, "evidence": preuve}
+
+    for p in _active:
+        if cpes and p.cpes:
+            correspondance = next((c for c in cpes
+                                   if any(c.startswith(pc) or pc in c for pc in p.cpes)), None)
+            if correspondance:
+                _noter(p, CONFIRMED, f"CPE {correspondance[:60]}")
+                continue
+
+        if struct.strip():
+            motif = next((rx for rx in p.specifiques if rx.search(struct)), None)
+            if motif:
+                _noter(p, HIGH_CONFIDENCE, f"alias produit dans les champs structures")
+                continue
+            # L'éditeur correspond, le produit non : on trace le rejet et on s'arrête là.
+            # Les champs structurés sont renseignés, le texte libre n'a rien à ajouter.
+            if any(rx.search(struct) for rx in p.editeur_seul):
+                _noter(p, REJECTED, f"seul l'editeur « {p.vendor} » correspond")
+            continue
+
+        if texte.strip() and any(rx.search(texte) for rx in p.strict):
+            _noter(p, POSSIBLE, "alias produit dans le texte libre")
+
+    return sorted(trouves.values(), key=lambda h: _ORDRE_CONFIANCE[h["confidence"]])
 
 
 def classify_all(rec: dict) -> list[tuple[str, str]]:

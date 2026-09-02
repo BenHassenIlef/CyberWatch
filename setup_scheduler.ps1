@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 #  CyberWatch AI - Installation de la TÂCHE PLANIFIÉE WINDOWS de collecte
 #
 #  Crée une tâche qui lance chaque jour `collect_once.py` (collecte CVE), INDÉPENDAMMENT

@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime
 
 from app.backend.core.config import settings
 from app.backend.services.collection import net
@@ -28,6 +29,9 @@ from app.backend.services.collection.schema import (
 _SCALAR_FIELDS = ("title", "description", "published_at", "updated_at", "cvss_score",
                   "cvss_vector", "severity", "cwe", "vuln_type", "impact",
                   "vendor", "product", "affected_versions", "solution")
+
+# Debut du programme CVE : une date anterieure est une erreur de source, pas une divulgation.
+_CVE_ERA_START = datetime(1999, 1, 1)
 
 _CVSS_VECTOR_RE = re.compile(r"CVSS:\d\.\d/[A-Z:/.\d]+")
 
@@ -157,7 +161,18 @@ async def _from_mitre(cve_id: str) -> dict:
     sols = [s.get("value") for s in cna.get("solutions", []) if s.get("value")]
     if sols:
         out["solution"] = " ".join(sols)
-    out["published_at"] = parse_dt(meta.get("datePublished"))
+    # DATE DE PUBLICATION — deux dates coexistent dans un enregistrement CVE, et la
+    # distinction n'est pas cosmétique :
+    #
+    #   « datePublic »    date à laquelle le CNA a DIVULGUÉ la vulnérabilité. C'est celle
+    #                     qu'affiche l'avis de l'éditeur, et celle qu'attend un consultant.
+    #   « datePublished » date d'ajout de la FICHE au registre CVE, souvent bien plus tard :
+    #                     une faille divulguée le 11 peut n'être enregistrée que le 19.
+    #
+    # Retenir « datePublished » faisait apparaître comme « publiée aujourd'hui » une
+    # vulnérabilité connue depuis plus d'une semaine — et contredisait la page officielle.
+    # On prend donc la divulgation quand le CNA la déclare, l'enregistrement sinon.
+    out["published_at"] = parse_dt(cna.get("datePublic")) or parse_dt(meta.get("datePublished"))
     out["updated_at"] = parse_dt(meta.get("dateUpdated"))
     return {k: v for k, v in out.items() if v not in (None, [], "")}
 
@@ -433,6 +448,24 @@ def _merge(cve_id: str, seed: dict | None, contributions: list[tuple[str, dict]]
         for key in _SCALAR_FIELDS:
             if part.get(key) not in (None, "", []):
                 record[key] = part[key]
+
+    # DATE DE PUBLICATION : la PLUS ANCIENNE des sources d'autorité, et non celle de la
+    # source la mieux classée.
+    #
+    # Les sources ne répondent pas à la même question. NVD et MITRE datent l'entrée de la
+    # fiche dans LEUR registre ; le CNA date la DIVULGATION. Pour une faille Microsoft
+    # divulguée le 11 et enregistrée le 19, l'ordre de priorité retenait le 19 — la fiche
+    # annonçait « publiée aujourd'hui » une vulnérabilité vieille de huit jours, en
+    # contradiction directe avec l'avis officiel.
+    #
+    # Une vulnérabilité ne peut pas avoir été publiée APRÈS avoir été rendue publique : la
+    # plus ancienne date crédible est donc la bonne. C'est la règle déjà appliquée au
+    # stockage, ici étendue à la fusion.
+    candidates = [part["published_at"] for _s, part in contribs
+                  if isinstance(part.get("published_at"), datetime)
+                  and part["published_at"].replace(tzinfo=None) >= _CVE_ERA_START]
+    if candidates:
+        record["published_at"] = min(candidates, key=lambda d: d.replace(tzinfo=None))
     # Listes : union sur toutes les contributions.
     for key in LIST_FIELDS:
         merged: list = []

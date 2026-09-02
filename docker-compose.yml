@@ -1,0 +1,103 @@
+# =====================================================================
+#  CyberWatch AI - Pile complete (MongoDB + backend + frontend)
+#
+#  Demarrage :
+#      cp .env.docker.example .env      # puis renseignez vos secrets
+#      docker compose up -d --build
+#
+#  Acces :
+#      Application  http://localhost:5173
+#      API          http://localhost:8000/docs
+#
+#  PLANIFICATION DE LA COLLECTE
+#  Sur Windows, la collecte quotidienne est declenchee par une Tache planifiee qui lance
+#  collect_once.py. Ce mecanisme n'existe pas en conteneur : on bascule donc sur le
+#  PLANIFICATEUR INTERNE du backend (COLLECTION_TRIGGER=internal), qui remplit le meme
+#  role tant que le conteneur backend tourne. Ne definissez PAS « external » ici : plus
+#  rien ne declencherait la collecte.
+# =====================================================================
+
+services:
+
+  mongo:
+    image: mongo:7
+    container_name: cyberwatch-mongo
+    restart: unless-stopped
+    volumes:
+      # Volume NOMME : les CVE collectees survivent a `docker compose down`.
+      # (Elles ne disparaissent qu'avec `docker compose down -v`.)
+      - mongo-data:/data/db
+    ports:
+      # Expose en LOCAL uniquement, pour inspection via MongoDB Compass.
+      # Retirez cette ligne en production : le backend joint mongo par le reseau interne.
+      - "127.0.0.1:27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [cyberwatch]
+
+  backend:
+    build:
+      context: .
+      dockerfile: app/backend/Dockerfile
+    container_name: cyberwatch-backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        # On attend que Mongo reponde REELLEMENT : sans cette condition, le backend
+        # demarrerait avant la base et echouerait a creer ses index.
+        condition: service_healthy
+    env_file:
+      # Secrets et reglages : lus a l'EXECUTION, jamais copies dans l'image (.dockerignore).
+      - .env
+    environment:
+      # Ces valeurs ECRASENT celles du .env : elles sont specifiques au reseau Docker.
+      MONGO_URI: mongodb://mongo:27017
+      DB_NAME: cyberwatch
+      # Le navigateur appelle l'API depuis l'hote -> l'origine autorisee est celle du poste.
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      # Voir l'encadre en tete de fichier : pas de Tache Windows en conteneur.
+      COLLECTION_TRIGGER: internal
+    ports:
+      - "8000:8000"
+    volumes:
+      # Journaux accessibles depuis l'hote (logs/collect_once.log, diagnostic de collecte).
+      - ./logs:/app/logs
+    # Chromium ecrit dans /dev/shm ; les 64 Mo par defaut de Docker le font planter sur des
+    # pages lourdes -> rendu et export PDF en echec.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks: [cyberwatch]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: app/frontend/Dockerfile
+      args:
+        # URL vue par le NAVIGATEUR (pas le nom de service Docker). Incrustee au build :
+        # la modifier impose `docker compose build frontend`.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    container_name: cyberwatch-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      # 5173 sur l'hote pour conserver l'URL habituelle ; nginx ecoute sur 80 en interne.
+      - "5173:80"
+    networks: [cyberwatch]
+
+volumes:
+  mongo-data:
+
+networks:
+  cyberwatch:
+    driver: bridge

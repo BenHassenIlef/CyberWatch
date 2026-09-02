@@ -4,6 +4,7 @@ import { Sparkles, Send, Plus, MessageSquare, ShieldAlert, ExternalLink, Trash2,
 import Layout from "../../components/Layout";
 import PageHeader from "../../components/ui/PageHeader";
 import AiSummaryButtons from "../../components/ui/AiSummaryButtons";
+import Markdown from "../../components/ui/Markdown";
 import api from "../../api/axios";
 import { useConsultantNavItems } from "./navItems";
 import { SEVERITY_LABELS, SEVERITY_STYLES } from "./cveConstants";
@@ -73,7 +74,7 @@ export default function Assistant() {
     const msgs = [];
     for (const m of data.items) {
       msgs.push({ role: "user", question: m.question });
-      msgs.push({ role: "assistant", answer: m.answer, sources: m.sources, results: m.results, confidence: m.confidence, count: m.count, sections: m.sections, style: m.style, generated_by: m.generated_by, scope: m.scope });
+      msgs.push({ role: "assistant", answer: m.answer, sources: m.sources, results: m.results, confidence: m.confidence, count: m.count, sections: m.sections, style: m.style, generated_by: m.generated_by, scope: m.scope, rewritten_question: m.rewritten_question });
     }
     setMessages(msgs);
     setConvId(id);
@@ -163,17 +164,34 @@ export default function Assistant() {
                         )}
                       </div>
 
+                      {/* QUESTION DE SUIVI RÉÉCRITE : « et pour Microsoft ? » a été complétée
+                          à partir des échanges précédents. Le consultant doit voir ce que
+                          l'assistant a compris — sinon une mémoire qui se trompe donne une
+                          réponse cohérente à une question qu'il n'a jamais posée, sans
+                          qu'aucun élément à l'écran ne permette de s'en apercevoir. */}
+                      {m.rewritten_question && (
+                        <p className="mb-2 rounded-lg bg-white/70 px-3 py-1.5 text-xs italic text-slate-500">
+                          Question interprétée d’après le contexte :{" "}
+                          <span className="not-italic font-medium text-slate-600">{m.rewritten_question}</span>
+                        </p>
+                      )}
+
+                      {/* RENDU DU MARKDOWN. Le texte etait affiche brut (`whitespace-pre-wrap`) :
+                          une reponse comparative arrivait sous forme de « | Aspect | Description | »
+                          et de « **Definition** » en clair, illisible. Le composant Markdown ne
+                          produit que des elements React — jamais du HTML injecte — de sorte qu'une
+                          reponse construite a partir de contenus externes ne peut rien executer. */}
                       {m.sections?.length > 0 ? (
-                        <div className="space-y-3">
+                        <div className="space-y-4">
                           {m.sections.map((s, si) => (
                             <div key={si}>
-                              <h4 className="text-xs font-bold uppercase tracking-wide text-brand-700">{s.title}</h4>
-                              <div className="mt-0.5 whitespace-pre-wrap leading-relaxed text-slate-700">{s.body}</div>
+                              <h4 className="mb-1 text-xs font-bold uppercase tracking-wide text-brand-700">{s.title}</h4>
+                              <Markdown texte={s.body} className="text-slate-700" />
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="whitespace-pre-wrap leading-relaxed">{m.answer}</div>
+                        <Markdown texte={m.answer} />
                       )}
 
                       {m.results?.length > 0 && (

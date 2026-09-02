@@ -33,8 +33,24 @@ def _content_matches_method(collection_method: str | None, fetched: FetchResult,
     return True
 
 
-def verify_technical(source: dict, fetched: FetchResult | None) -> dict:
-    """Retourne {'score': int, 'checks': [...]} pour le niveau technique."""
+def _detail_contenu(evalue: FetchResult, saisi: FetchResult) -> str:
+    """Précise QUELLE adresse a servi au contrôle, pour un rapport lisible."""
+    base = f"Content-Type : {evalue.content_type or 'inconnu'}"
+    if evalue is not saisi and getattr(evalue, "final_url", None):
+        return f"{base} — évalué sur {evalue.final_url}"
+    return base
+
+
+def verify_technical(source: dict, fetched: FetchResult | None,
+                    content_fetched: FetchResult | None = None) -> dict:
+    """Retourne {'score': int, 'checks': [...]} pour le niveau technique.
+
+    `fetched` est la réponse de l'URL SAISIE : elle porte l'accessibilité et le TLS.
+    `content_fetched` est le contenu que la méthode retenue lit RÉELLEMENT - flux RSS,
+    endpoint d'API - souvent à une autre adresse. Sans cette distinction, une source
+    dont l'accueil est en HTML et le flux en XML était annoncée « contenu incohérent »
+    alors que l'analyseur venait d'y valider seize CVE : le rapport se contredisait.
+    """
     collection_method = source.get("collection_method")
     api_endpoint = source.get("api_endpoint")
 
@@ -56,14 +72,17 @@ def verify_technical(source: dict, fetched: FetchResult | None) -> dict:
     https_present = fetched.is_https and fetched.reached
     https_detail = fetched.ssl_note if (https_present and not fetched.ssl_ok) else None
 
+    # Le contenu évalué est celui de la méthode retenue quand il diffère de la page saisie.
+    evalue = content_fetched if (content_fetched is not None and content_fetched.reached) else fetched
+
     checks = [
         make_check("URL renseignée", True),
         make_check(reach_label, reachable, detail=fetched.error),
         make_check("Connexion sécurisée (HTTPS/TLS)", https_present, detail=https_detail),
         make_check(
             "Contenu cohérent avec la méthode de collecte",
-            _content_matches_method(collection_method, fetched, api_endpoint),
-            detail=f"Content-Type : {fetched.content_type or 'inconnu'}",
+            _content_matches_method(collection_method, evalue, api_endpoint),
+            detail=_detail_contenu(evalue, fetched),
         ),
     ]
     return {"score": simple_score(checks), "checks": checks}

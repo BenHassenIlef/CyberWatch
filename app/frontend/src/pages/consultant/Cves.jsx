@@ -25,6 +25,23 @@ const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("fr-FR") : NA);
 const fmtDateTime = (d) => (d ? new Date(d).toLocaleString("fr-FR") : NA);
 const na = (v) => (v === null || v === undefined || v === "" ? <span className="italic text-slate-400">{NA}</span> : v);
 
+// Chaque vue dit ce que SON absence de résultat signifie. Un « Aucune CVE trouvée » identique
+// partout laisse le lecteur conclure à la panne, alors qu'une journée sans vulnérabilité sur
+// le parc surveillé est le cas le plus fréquent — et une bonne nouvelle.
+const EMPTY_LABELS = {
+  published: "Aucune CVE ne correspond à ces critères.",
+  published_today:
+    "Aucune vulnérabilité n'a été publiée aujourd'hui par les sources consultées. " +
+    "C'est fréquent le week-end et les jours fériés.",
+  collected:
+    "Aucune nouvelle vulnérabilité n'est entrée en base aujourd'hui : les publications du " +
+    "jour ne concernent aucun de vos produits surveillés. Les modifications de fiches déjà " +
+    "suivies figurent dans l'onglet « Mises à jour aujourd'hui ».",
+  updated_today:
+    "Aucune vulnérabilité déjà suivie n'a été modifiée aujourd'hui. Les découvertes du jour " +
+    "figurent dans l'onglet « Collectées aujourd'hui ».",
+};
+
 export default function ConsultantCves() {
   const navItems = useConsultantNavItems();
   const [data, setData] = useState({ total: 0, items: [] });
@@ -57,6 +74,9 @@ export default function ConsultantCves() {
     if (view === "collected") params.collected_today = true; // vue « activité du jour »
     // Vue « Publiées aujourd'hui » : date OFFICIELLE de publication, filtrée côté MongoDB.
     if (view === "published_today") params.published_today = true;
+    // Vue « Mises à jour aujourd'hui » : fiches connues AVANT ce jour dont les données ont
+    // réellement changé — distinct des nouveautés, qu'un consultant a déjà traitées.
+    if (view === "updated_today") params.updated_today = true;
     const { data } = await api.get("/consultant/cves", { params });
     setData(data);
     setLoading(false);
@@ -119,6 +139,7 @@ export default function ConsultantCves() {
           { key: "published", label: "Publiées récemment" },
           { key: "published_today", label: "Publiées aujourd'hui" },
           { key: "collected", label: "Collectées aujourd'hui" },
+          { key: "updated_today", label: "Mises à jour aujourd'hui" },
         ].map((t) => (
           <button
             key={t.key}
@@ -209,6 +230,11 @@ export default function ConsultantCves() {
               </span>
             ),
           },
+          // ÉDITEUR AVANT LE PRODUIT — c'est l'ordre dans lequel on identifie un logiciel.
+          // « C# Driver » seul ne dit pas de quel produit il s'agit ; « MongoDB » le dit.
+          // Renseigné sur 91 % des fiches ; les autres affichent « Non identifié » plutôt
+          // qu'un tiret muet, qui laisserait croire à un oubli de l'outil.
+          { key: "vendor", label: "Éditeur", render: (r) => na(r.vendor) },
           { key: "product", label: "Produit", render: (r) => na(r.product || (r.affected_products || []).join(", ")) },
           { key: "vuln_type", label: "Type", render: (r) => <span className="line-clamp-1 max-w-[12rem]">{na(r.vuln_type)}</span> },
           { key: "cvss_score", label: "CVSS", render: (r) => (typeof r.cvss_score === "number" ? r.cvss_score.toFixed(1) : na(null)) },
@@ -226,8 +252,58 @@ export default function ConsultantCves() {
           },
           view === "collected"
             ? { key: "collected_at", label: "Collectée le", render: (r) => fmtDateTime(r.collected_at) }
-            : { key: "published_at", label: "Publiée", render: (r) => fmtDate(r.published_at) },
-          { key: "updated_at", label: "Mise à jour", render: (r) => fmtDate(r.updated_at) },
+            : view === "updated_today"
+            ? {
+                // L'ONGLET PORTE SUR DES CVE ANCIENNES : leur ancienneté doit se voir. Sans
+                // la date de première détection, rien ne distingue à l'écran une fiche suivie
+                // depuis dix jours d'une nouveauté du matin — or c'est exactement ce que
+                // cette vue est censée séparer.
+                key: "published_at",
+                label: "Publiée (CVE)",
+                render: (r) => (
+                  <div>
+                    <div>{fmtDate(r.published_at)}</div>
+                    {r.collected_at && (
+                      <div className="text-xs text-slate-400">
+                        suivie depuis le {fmtDate(r.collected_at)}
+                      </div>
+                    )}
+                  </div>
+                ),
+              }
+            : { key: "published_at", label: "Publiée (CVE)", render: (r) => fmtDate(r.published_at) },
+          // DEUX DATES DE « MISE À JOUR », qu'il ne faut jamais confondre :
+          //
+          //   updated_at            révision annoncée par la SOURCE (l'éditeur, le NVD) ;
+          //   last_important_update moment où NOTRE collecte a constaté le changement.
+          //
+          // L'onglet « Mises à jour aujourd'hui » filtre sur la seconde et affichait la
+          // première : une CVE détectée comme modifiée ce matin s'affichait « 13/08 », date
+          // de la révision de l'éditeur. La liste paraissait montrer de vieilles mises à
+          // jour, alors qu'elle montrait précisément ce qui avait bougé aujourd'hui.
+          view === "updated_today"
+            ? {
+                key: "last_important_update",
+                label: "Changement détecté",
+                render: (r) => (
+                  <div>
+                    <div>{fmtDateTime(r.last_important_update)}</div>
+                    {/* `change_summary` est une LISTE de champs modifiés. Rendue telle quelle,
+                        React la concatène sans séparateur (« RéférencesScore »). */}
+                    {(Array.isArray(r.change_summary) ? r.change_summary.length : r.change_summary) ? (
+                      <div className="text-xs text-emerald-700">
+                        {Array.isArray(r.change_summary) ? r.change_summary.join(" · ") : r.change_summary}
+                      </div>
+                    ) : null}
+                    {r.updated_at && (
+                      <div className="text-xs text-slate-400">
+                        révision éditeur : {fmtDate(r.updated_at)}
+                      </div>
+                    )}
+                  </div>
+                ),
+              }
+            : { key: "updated_at", label: "Mise à jour", render: (r) => fmtDate(r.updated_at) },
           { key: "source", label: "Source" },
           {
             key: "actions",
@@ -240,7 +316,10 @@ export default function ConsultantCves() {
           },
         ]}
         rows={loading ? [] : data.items}
-        emptyLabel={loading ? "Chargement…" : "Aucune CVE trouvée"}
+        // UN TABLEAU VIDE DOIT SE JUSTIFIER. « Aucune CVE trouvée » ne dit pas si la journée
+        // a été calme ou si la collecte a échoué — et le lecteur tranche presque toujours en
+        // faveur de la panne. Chaque vue explique donc ce que son absence de résultat signifie.
+        emptyLabel={loading ? "Chargement…" : EMPTY_LABELS[view]}
       />
 
       <div className="mt-4 flex items-center justify-between text-sm text-slate-500">

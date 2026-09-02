@@ -65,6 +65,16 @@ async def login(payload: SignInRequest):
 
     await log_action(str(user["_id"]), user["role"], "login")
 
+    # DATE DE DERNIÈRE CONNEXION, portée par le compte lui-même.
+    #
+    # Elle se déduisait jusqu'ici du journal d'activité, ce qui obligeait à l'agréger à chaque
+    # besoin. La porter sur l'utilisateur permet de distinguer immédiatement les comptes
+    # RÉELLEMENT UTILISÉS des comptes de démonstration — et donc de n'adresser les
+    # notifications qu'aux consultants qui se connectent.
+    await db.users.update_one({"_id": user["_id"]},
+                              {"$set": {"last_login_at": utcnow()},
+                               "$inc": {"login_count": 1}})
+
     token = create_access_token(str(user["_id"]), user["role"])
     return TokenResponse(access_token=token, user=_to_user_out(user))
 

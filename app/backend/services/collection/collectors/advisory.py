@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from app.backend.services.collection import dedup, net, structure_detector
+from app.backend.services.collection import provenance, sanitize
 from app.backend.services.collection.schema import CVE_RE, add_source, new_record, parse_dt
 from app.backend.services.verification import browser_client
 
@@ -269,6 +270,17 @@ def _description_from_lines(lines: list[str]) -> str | None:
 # Délai court du sondage httpx : certains portails (DGSSI…) font PENDRE la connexion ~28 s
 # avant d'échouer ; on échoue vite pour basculer sans attendre sur le rendu navigateur.
 FETCH_HTTP_TIMEOUT = 8.0
+# Délai plus généreux pour la page de LISTE, et pour elle seule.
+#
+# Elle est l'entrée de la source : si elle expire, aucun avis n'est découvert et la source
+# entière est perdue — c'est ce qui arrivait à un portail public répondant en 25 secondes,
+# porté « injoignable » alors qu'il renvoyait bien un code 200. Une page d'avis qui expire,
+# elle, ne fait perdre que cet avis. Le surcoût est borné : quelques requêtes par source,
+# contre plusieurs dizaines de pages de détail.
+LISTING_HTTP_TIMEOUT = 30.0
+# Taille au-dela de laquelle une page de liste est jugee REELLEMENT rendue par le serveur.
+# Une coquille JavaScript pese quelques kilo-octets ; une vraie page de bulletins bien plus.
+LISTING_MIN_HTML = 20000
 
 
 async def _fetch(url: str, expect_cve: bool = True, session=None) -> str:
@@ -279,8 +291,18 @@ async def _fetch(url: str, expect_cve: bool = True, session=None) -> str:
     `session` : session de rendu RÉUTILISABLE (un seul navigateur pour tout le crawl) ; si None,
     un navigateur éphémère est utilisé.
     """
-    resp = await net.get(url, timeout=FETCH_HTTP_TIMEOUT)
+    delai = FETCH_HTTP_TIMEOUT if expect_cve else LISTING_HTTP_TIMEOUT
+    resp = await net.get(url, timeout=delai)
     body = resp.text if (resp is not None and resp.status_code == 200) else ""
+
+    # Une page de LISTE n'a aucune raison de contenir des identifiants CVE : ce sont les
+    # pages de détail qui les portent. Exiger ces marqueurs ici envoyait systématiquement la
+    # page au rendu navigateur — 83 secondes sur un portail qui répond en 25. Un corps HTML
+    # volumineux prouve déjà que le serveur a rendu la page ; seule une coquille JavaScript,
+    # nécessairement courte, justifie le détour par le navigateur.
+    if not expect_cve and len(body) >= LISTING_MIN_HTML:
+        return body
+
     if not (ADVISORY_ID_RE.search(body) or CVE_RE.search(body) or "<article" in body.lower()):
         if session is not None:
             rendered = await session.render(url, wait_for_cve=expect_cve)
@@ -377,29 +399,67 @@ def parse_advisory(html: str, url: str) -> dict:
 
 
 def _apply_common(rec: dict, adv: dict, source: dict) -> None:
-    rec["description"] = adv.get("description")
-    rec["product"] = adv.get("product")
-    rec["vendor"] = adv.get("vendor")
-    rec["impact"] = adv.get("impact")
-    if adv.get("severity"):
-        rec["severity"] = adv["severity"]              # criticité maCERT (repli avant NVD)
-    rec["affected_versions"] = adv.get("affected_versions")
-    if adv.get("affected_systems"):
-        rec["affected_systems"] = list(adv["affected_systems"])
-    rec["fixed_version"] = adv.get("fixed_version")
-    rec["platform"] = adv.get("platform")
-    rec["solution"] = adv.get("solution")
-    rec["published_at"] = adv.get("published_at")
-    rec["updated_at"] = adv.get("updated_at")
+    """Applique le CONTEXTE D'AVIS à une CVE — jamais les faits propres à la vulnérabilité.
+
+    Un avis CERT est un CONTEXTE : il signale qu'une CVE existe, il ne la décrit pas
+    individuellement. Un même bulletin peut citer 40 CVE aux descriptions, scores, produits,
+    versions et dates de publication tous différents.
+
+    Recopier les champs de l'avis sur chacune de ses CVE — ce que faisait cette fonction —
+    contaminait donc 40 vulnérabilités avec une seule description et une seule date. C'est la
+    cause racine du symptôme « CVE publiée le 18/08 » alors qu'elle date du 24/06.
+
+    Deux catégories désormais strictement séparées :
+      • MÉTADONNÉES D'AVIS  -> champs `advisory_*`, qui appartiennent légitimement à l'avis ;
+      • FAITS DE LA CVE     -> renseignés à titre PROVISOIRE, tracés `unverified`, et écrasés
+        dès que l'enrichissement par identifiant fournit une valeur d'autorité.
+
+    On ne VIDE pas ces champs : une fiche vide serait pire qu'une fiche imprécise. On les
+    marque, pour que l'interface ne les présente jamais comme vérifiés.
+    """
+    url = adv.get("advisory_url")
+
+    # ---- Métadonnées de l'AVIS (lui appartiennent : aucune ambiguïté) --------------------
     rec["advisory_id"] = adv.get("advisory_id")
     if adv.get("advisory_id"):
         rec["advisory_ids"] = [adv["advisory_id"]]
+    rec["advisory_title"] = adv.get("title")
+    rec["advisory_url"] = url
+    rec["advisory_published_at"] = adv.get("published_at")
+    rec["advisory_updated_at"] = adv.get("updated_at")
+
+    # ---- La date de l'AVIS N'EST PAS la date de publication de la CVE --------------------
+    # `published_at` reste VIDE : seul l'enrichissement par identifiant peut la renseigner.
+    # Sans cette règle, chaque republication d'un bulletin rajeunissait la CVE.
+
+    # ---- Faits PROVISOIRES, tous tracés comme non vérifiés -------------------------------
+    # Assainissement AVANT toute écriture : une valeur inexploitable ne doit pas même
+    # entrer avec une provenance « non vérifiée » — elle resterait affichée au consultant.
+    for champ, valeur in (
+        ("description", sanitize.clean_description(adv.get("description"))),
+        ("product", sanitize.clean_product(adv.get("product"))),
+        ("vendor", sanitize.clean_vendor(adv.get("vendor"))),
+        ("impact", sanitize.clean_text(adv.get("impact"))),
+        ("severity", adv.get("severity")),
+        ("affected_versions", sanitize.clean_text(adv.get("affected_versions"))),
+        ("fixed_version", sanitize.clean_text(adv.get("fixed_version"))),
+        ("platform", sanitize.clean_text(adv.get("platform"), min_len=2)),
+        ("solution", sanitize.clean_text(adv.get("solution"))),
+    ):
+        provenance.apply(rec, champ, valeur, "advisory", url,
+                         confidence=provenance.UNVERIFIED)
+
+    if adv.get("affected_systems"):
+        rec["affected_systems"] = list(adv["affected_systems"])
+
     refs = list(adv.get("references") or [])
-    if adv.get("advisory_url") and adv["advisory_url"] not in refs:
-        refs.append(adv["advisory_url"])
+    if url and url not in refs:
+        refs.append(url)
     rec["references"] = refs
-    rec["detail_url"] = adv.get("advisory_url")
+    rec["detail_url"] = url
     rec["data_origin"] = "CERT advisory"
+    # Tant qu'aucune source d'autorité n'a confirmé ces valeurs, la fiche est à relire.
+    rec["validation_status"] = "needs_review"
     add_source(rec, source)
 
 

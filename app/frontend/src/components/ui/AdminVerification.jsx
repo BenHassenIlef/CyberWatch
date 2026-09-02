@@ -37,6 +37,9 @@ export default function AdminVerification({ verification }) {
   const ind = verification.admin_indicators || {};
   const tech = verification.technical?.checks || [];
   const cred = verification.credibility?.checks || [];
+  const auth = verification.authenticity;
+  const authChecks = auth?.checks || [];
+  const alertes = auth?.alertes || [];
 
   const techFind = (kw) => tech.find((c) => c.label.toLowerCase().includes(kw));
   const credFind = (kw) => cred.find((c) => c.label.toLowerCase().includes(kw));
@@ -80,8 +83,49 @@ export default function AdminVerification({ verification }) {
           <Row state={whitelisted} label="Domaine présent dans la liste blanche" />
           <Row state={!!httpsCheck?.passed} label="Connexion sécurisée (HTTPS/TLS)" />
           <Row state={!!ind.contains_cve} label="La source contient des CVE" />
+          {auth && (
+            <Row
+              state={auth.usurpation ? false : alertes.length ? null : true}
+              label={
+                auth.usurpation
+                  ? "Lien authentique — usurpation détectée"
+                  : alertes.length
+                  ? `Lien authentique — ${alertes.length} point${alertes.length > 1 ? "s" : ""} de vigilance`
+                  : "Lien authentique (aucun indice de contrefaçon)"
+              }
+            />
+          )}
         </ul>
       </div>
+
+      {/* Usurpation : signalée séparément, car ce n’est pas une nuance de score */}
+      {auth?.usurpation && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3">
+          <p className="text-sm font-semibold text-rose-700">Lien potentiellement contrefait</p>
+          <p className="mt-1 text-sm text-rose-600">
+            Cette adresse présente les caractéristiques d’une usurpation de source officielle.
+            Elle ne doit pas alimenter la veille sans vérification auprès de l’organisme concerné.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {alertes.map((a, i) => (
+              <li key={i} className="text-xs text-rose-700">• {a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!auth?.usurpation && alertes.length > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-700">Points de vigilance sur l’adresse</p>
+          <p className="mt-1 text-xs text-amber-700">
+            Aucun ne suffit à conclure à une contrefaçon ; ensemble, ils justifient un examen.
+          </p>
+          <ul className="mt-2 space-y-1">
+            {alertes.map((a, i) => (
+              <li key={i} className="text-xs text-amber-800">• {a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Score global uniquement */}
       <div className="flex items-center gap-3">
@@ -121,6 +165,20 @@ export default function AdminVerification({ verification }) {
           <Row state={!!ind.contains_cve} label="Présence de CVE" />
         </ul>
       </div>
+
+      {/* Détails — Niveau 3 : authenticité du lien */}
+      {authChecks.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Niveau 3 — Authenticité du lien
+          </h3>
+          <ul className="space-y-2">
+            {authChecks.map((c, i) => (
+              <Row key={i} state={c.passed} label={c.label} detail={c.detail} />
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

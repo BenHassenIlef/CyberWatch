@@ -11,14 +11,18 @@ from app.backend.services.verification import browser_client
 from app.backend.services.verification.credibility import Corroborator, verify_credibility
 from app.backend.services.verification.cve import extract_cve_ids
 from app.backend.services.verification.method_analyzer import analyze_source
+from app.backend.services.verification.authenticity import verifier_authenticite
 from app.backend.services.verification.http_client import FetchResult, fetch
 from app.backend.services.verification.technical import verify_technical
 from app.backend.utils import utcnow
 
-# Pondération du score global : la crédibilité prime (c'est l'objet de la mise à niveau),
-# mais une source techniquement inexploitable ne peut pas être approuvée (voir gating).
-TECHNICAL_WEIGHT = 0.4
-CREDIBILITY_WEIGHT = 0.6
+# Pondération du score global sur TROIS niveaux. La crédibilité reste prépondérante, mais
+# une source techniquement inexploitable ne peut pas être approuvée (voir gating), et
+# l'authenticité du lien conserve un poids propre : une adresse contrefaite peut très bien
+# répondre en HTTPS et publier des CVE d'apparence valide - c'est même le but recherché.
+TECHNICAL_WEIGHT = 0.3
+CREDIBILITY_WEIGHT = 0.5
+AUTHENTICITY_WEIGHT = 0.2
 
 APPROVE_THRESHOLD = 70
 REVIEW_THRESHOLD = 40
@@ -73,9 +77,19 @@ def _confidence_level(overall: int) -> str:
     return "FAIBLE"
 
 
-def build_summary(recommendation: str, fetched: FetchResult | None, detection: dict | None, credibility: dict) -> str:
+def build_summary(recommendation: str, fetched: FetchResult | None, detection: dict | None,
+                  credibility: dict, authenticity: dict | None = None) -> str:
     """Construit un résumé lisible citant les facteurs réels de la décision."""
     reasons: list[str] = []
+
+    # L'USURPATION EN PREMIER : c'est le motif qui commande la décision, et le consultant
+    # doit le lire avant les considérations de disponibilité ou de format.
+    if authenticity and authenticity.get("usurpation"):
+        reasons.append("l'adresse présente les caractéristiques d'un lien contrefait "
+                       f"({authenticity['alertes'][0].rstrip('.') if authenticity.get('alertes') else 'usurpation détectée'})")
+    elif authenticity and authenticity.get("alertes"):
+        reasons.append(f"l'authenticité du lien appelle une réserve : "
+                       f"{authenticity['alertes'][0].rstrip('.').lower()}")
 
     # Facteurs positifs / négatifs concrets tirés des contrôles réels.
     checks = {c["label"]: c["passed"] for c in credibility["checks"]}
@@ -131,23 +145,39 @@ async def verify_source(source: dict, corroborator: Corroborator | None = None) 
             rendered_body=fetched.body if rendered_with_browser else None,
         )
 
-    # Le contrôle de cohérence technique connaît la méthode retenue et l'endpoint éventuel.
+    # L'analyse CVE (présence + dates + crédibilité) porte sur le contenu RÉEL de la méthode
+    # retenue (ex. le JSON de l'API MSRC, ou le HTML rendu), pas sur la page d'accueil vide.
+    # Calculé AVANT le contrôle technique, qui s'appuie désormais dessus.
+    analysis_fetched = _fetch_from_analysis(analysis, fetched, target)
+
+    # Le contrôle de cohérence technique connaît la méthode retenue, l'endpoint éventuel, et
+    # le contenu que cette méthode lit réellement - faute de quoi il jugeait la page d'accueil
+    # à l'aune d'un flux RSS hébergé ailleurs, et contredisait sa propre validation.
     technical_source = {**source}
     if analysis:
         technical_source["collection_method"] = analysis["collection_method"]
         technical_source["api_endpoint"] = analysis.get("api_endpoint")
-    technical = verify_technical(technical_source, fetched)
-
-    # L'analyse CVE (présence + dates + crédibilité) porte sur le contenu RÉEL de la méthode
-    # retenue (ex. le JSON de l'API MSRC, ou le HTML rendu), pas sur la page d'accueil vide.
-    analysis_fetched = _fetch_from_analysis(analysis, fetched, target)
+    technical = verify_technical(technical_source, fetched, analysis_fetched)
 
     credibility = await verify_credibility(source, analysis_fetched, corroborator=corroborator)
 
+    # NIVEAU 3 - AUTHENTICITÉ DU LIEN : l'adresse est-elle bien celle qu'elle prétend être ?
+    # Les niveaux 1 et 2 répondent à « le site répond-il ? » et « son contenu est-il
+    # crédible ? » - deux questions qu'une contrefaçon soigne précisément.
+    authenticity = await verifier_authenticite(target, fetched) if target else {
+        "checks": [], "score": 0, "alertes": ["Aucune URL à analyser."], "usurpation": True}
+
     technical_score = technical["score"]
     credibility_score = credibility["score"]
-    overall = round(TECHNICAL_WEIGHT * technical_score + CREDIBILITY_WEIGHT * credibility_score)
-    recommendation = _recommendation(overall, technical_score, credibility["hard_reject"])
+    authenticity_score = authenticity["score"]
+    overall = round(TECHNICAL_WEIGHT * technical_score
+                    + CREDIBILITY_WEIGHT * credibility_score
+                    + AUTHENTICITY_WEIGHT * authenticity_score)
+    # USURPATION CARACTÉRISÉE = refus, quel que soit le reste. Un domaine qui imite une source
+    # officielle n'a pas à être « surveillé » : sa qualité technique aggrave le problème
+    # plutôt qu'elle ne le compense.
+    recommendation = _recommendation(
+        overall, technical_score, credibility["hard_reject"] or authenticity["usurpation"])
 
     # --- Logs détaillés : montre l'issue de CHAQUE étape (diagnostic des échecs) ---
     _log = logging.getLogger("cyberwatch.verification")
@@ -163,8 +193,16 @@ async def verify_source(source: dict, corroborator: Corroborator | None = None) 
         _log.info("[verify][crédibilité] %s : %s%s", _c["label"],
                   {True: "OK", False: "ÉCHEC", None: "indéterminé"}[_c["passed"]],
                   f" — {_c['detail']}" if _c.get("detail") else "")
-    _log.info("[verify] SCORES technique=%d crédibilité=%d global=%d -> %s",
-              technical_score, credibility_score, overall, DECISION_LABELS[recommendation])
+    for _c in authenticity["checks"]:
+        _log.info("[verify][authenticité] %s : %s%s", _c["label"],
+                  {True: "OK", False: "ÉCHEC", None: "indéterminé"}[_c["passed"]],
+                  f" — {_c['detail']}" if _c.get("detail") else "")
+    if authenticity["usurpation"]:
+        _log.warning("[verify][authenticité] USURPATION CARACTÉRISÉE sur %s : %s",
+                     target, " | ".join(authenticity["alertes"]))
+    _log.info("[verify] SCORES technique=%d crédibilité=%d authenticité=%d global=%d -> %s",
+              technical_score, credibility_score, authenticity_score, overall,
+              DECISION_LABELS[recommendation])
 
     detection_dict = _detection_report(analysis)
     admin_indicators = _admin_indicators(
@@ -176,16 +214,20 @@ async def verify_source(source: dict, corroborator: Corroborator | None = None) 
     return {
         "technical_score": technical_score,
         "credibility_score": credibility_score,
+        "authenticity_score": authenticity_score,
         "overall_score": overall,
         # Conservé pour la colonne « Score de confiance » de la liste des sources.
         "confidence_score": overall,
         "recommendation": recommendation,
         "decision": DECISION_LABELS[recommendation],
         "confidence_level": _confidence_level(overall),
-        "summary": build_summary(recommendation, fetched, detection_dict, credibility),
+        "summary": build_summary(recommendation, fetched, detection_dict, credibility, authenticity),
         "detection": detection_dict,
         "technical": {"score": technical_score, "checks": technical["checks"]},
         "credibility": {"score": credibility_score, "checks": credibility["checks"]},
+        "authenticity": {"score": authenticity_score, "checks": authenticity["checks"],
+                         "alertes": authenticity["alertes"],
+                         "usurpation": authenticity["usurpation"]},
         # 3 indicateurs simplifiés affichés à l'admin (vérification de la source).
         "admin_indicators": admin_indicators,
         "rendered_with_browser": rendered_with_browser,

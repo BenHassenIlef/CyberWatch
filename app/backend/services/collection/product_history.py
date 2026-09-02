@@ -2,7 +2,8 @@
 
 Objectif (point 10 du cahier des charges) : sans relancer TOUTES les sources, récupérer les CVE
 RÉCENTES d'UN produit précis sur une fenêtre (7 / 30 / 90 jours) via la recherche par mot-clé de
-NVD, puis les classer (`monitored.classify_all`) et les enregistrer (`storage.save_records`).
+NVD, puis les classer (`monitored.classify_detailed`, le MEME classificateur que la collecte
+quotidienne) et les enregistrer (`storage.save_records`).
 
 Réutilise l'infrastructure existante : `net.nvd_get` (limitation de débit + clé API), le parseur NVD
 d'`enrichment`, et le pipeline de sauvegarde. Aucune source codée en dur, aucune duplication de CVE
@@ -82,11 +83,40 @@ async def collect_product_history(db, product: dict, days: int) -> dict:
         except Exception:  # noqa: BLE001
             nvd = {}
         rec = _record_from_nvd(cid, nvd)
-        hits = monitored.classify_all(rec)
+
+        # CLASSER SUR LA CONNAISSANCE CONSOLIDÉE, pas sur la seule réponse NVD.
+        #
+        # NVD ne publie pas toujours les données structurées d'une CVE récente : l'éditeur
+        # et le produit reviennent vides, l'appariement se rabat sur la description, et une
+        # simple mention suffit à rattacher la fiche. Un exemple réel : une vulnérabilité
+        # d'ArcadeDB, dont la description cite Grafana au titre d'un connecteur, se
+        # retrouvait attribuée à Grafana. La base, elle, connaissait déjà l'éditeur.
+        connu = await db.cves.find_one({"cve_id": cid},
+                                       {"vendor": 1, "product": 1, "affected_products": 1})
+        pour_classer = dict(rec)
+        for champ in ("vendor", "product", "affected_products"):
+            if not pour_classer.get(champ) and (connu or {}).get(champ):
+                pour_classer[champ] = connu[champ]
+
+        # MÊME classificateur que la collecte quotidienne.
+        #
+        # Cette collecte initiale utilisait `classify_all`, resté à l'ancienne logique : un
+        # produit pouvait donc être rattaché ici sur le seul nom de son éditeur, alors que
+        # la collecte du lendemain aurait écarté la même CVE. Deux règles pour un même
+        # périmètre, c'est une incohérence que le consultant finit par constater.
+        details = monitored.classify_detailed(pour_classer)
+        hits = [h for h in details if h["confidence"] != monitored.REJECTED]
         if hits:
-            rec["monitored_products"] = list(dict.fromkeys(h[0] for h in hits))
-            rec["domains"] = list(dict.fromkeys(h[1] for h in hits if h[1]))
-            rec["monitored_product"], rec["domain"] = hits[0]
+            rec["monitored_products"] = list(dict.fromkeys(h["product"] for h in hits))
+            rec["domains"] = list(dict.fromkeys(h["domain"] for h in hits if h["domain"]))
+            rec["monitored_product"] = hits[0]["product"]
+            rec["domain"] = hits[0]["domain"]
+            # Niveau de confiance CONSERVÉ : quand NVD n'a pas encore publié les données
+            # structurées d'une CVE récente, l'appariement ne repose que sur le texte de sa
+            # description — « possible », et non « confirmé ». L'écrire permet de distinguer
+            # un rattachement solide d'une simple mention du produit.
+            rec["match_confidence"] = hits[0]["confidence"]
+            rec["match_evidence"] = hits[0]["evidence"]
             records.append(rec)
 
     saved = await storage.save_records(db, records) if records else {"inserted": 0, "updated": 0}

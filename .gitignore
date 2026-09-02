@@ -1,0 +1,35 @@
+# SECRETS — ne doivent jamais entrer dans l'historique du dépôt.
+# Le fichier .env porte la clé LLM, le mot de passe SMTP et le secret Reddit.
+# Modèle sans valeur sensible : .env.example
+.env
+.env.*
+!.env.example
+!.env.docker.example
+
+# Environnements et dépendances
+app/backend/.venv/
+app/frontend/node_modules/
+app/frontend/dist/
+venv/
+.venv/
+
+# Caches Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Journaux et fichiers de travail
+*.log
+logs/
+collect_*.log
+*.tmp
+
+# Systèmes de fichiers
+.DS_Store
+Thumbs.db
+
+# Éditeurs
+.vscode/
+.idea/

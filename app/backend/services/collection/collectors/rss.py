@@ -9,6 +9,7 @@ import re
 
 from app.backend.services.collection import net, parser
 from app.backend.services.collection.collectors.base import register, target_url
+from app.backend.services.collection import sanitize
 from app.backend.services.collection.schema import CVE_RE, new_record, parse_dt
 
 logger = logging.getLogger("cyberwatch.collection.rss")
@@ -54,5 +55,6 @@ async def collect(source: dict, since) -> list[dict]:
         link = _tag(item, "link")
         rec["detail_url"] = link if (link and link.startswith("http")) else f"https://nvd.nist.gov/vuln/detail/{rec['cve_id']}"
         rec["data_origin"] = "RSS"
+        sanitize.clean_record(rec)
         out.append(rec)
     return out

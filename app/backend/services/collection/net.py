@@ -15,12 +15,32 @@ _last_nvd = 0.0
 _nvd_lock = asyncio.Lock()  # sérialise l'accès NVD même en collecte parallèle
 
 
-async def get(url: str, headers: dict | None = None, timeout: float = 40.0) -> httpx.Response | None:
-    """GET générique, ne lève jamais (renvoie None en cas d'erreur réseau)."""
+async def post(url: str, data: dict | None = None, headers: dict | None = None,
+               timeout: float = 40.0) -> httpx.Response | None:
+    """POST de formulaire, ne lève jamais. Utilisé pour les échanges de jetons OAuth.
+
+    Aucune redirection n'est suivie : un point d'accès d'authentification qui redirige est
+    anormal, et suivre la redirection y ferait voyager les identifiants.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False,
+                                     headers={"User-Agent": UA, **(headers or {})}) as c:
+            return await c.post(url, data=data or {})
+    except Exception:  # noqa: BLE001 - erreur réseau : l'appelant décide de la suite
+        return None
+
+
+async def get(url: str, headers: dict | None = None, timeout: float = 40.0,
+              params: dict | None = None) -> httpx.Response | None:
+    """GET générique, ne lève jamais (renvoie None en cas d'erreur réseau).
+
+    `params` évite d'assembler les chaînes de requête à la main chez l'appelant — et donc
+    d'oublier un échappement sur une valeur qui en contient besoin.
+    """
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
                                      headers={"User-Agent": UA, **(headers or {})}) as c:
-            return await c.get(url)
+            return await c.get(url, params=params)
     except Exception:  # noqa: BLE001
         return None
 
